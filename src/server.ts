@@ -13,7 +13,7 @@ import { getLandingModal, saveLandingModal } from "./landingModalConfig.js";
 import { completeLogin, completeLoginInput, getAccessSession, issueLoginCode, issueLoginCodeInput, verifyLoginCode, verifyLoginCodeInput } from "./access.js";
 import { hashIp } from "./security.js";
 
-const origins = (process.env.WEB_ORIGIN ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+const origins = [...new Set([...(process.env.WEB_ORIGIN ?? "").split(",").map((value) => value.trim()).filter(Boolean), "https://tickets.yuppifacts.com"])];
 if (process.env.APP_ENV === "production" && origins.length === 0) throw new Error("WEB_ORIGIN is required in production");
 const app = express();
 app.disable("x-powered-by"); app.set("trust proxy", 1);
