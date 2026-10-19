@@ -8,6 +8,7 @@ const planId = z.enum(["individual", "accounting_firm", "company"]);
 const phone = z.string().regex(/^\+[1-9]\d{7,14}$/, "Número de WhatsApp inválido");
 
 export const createSessionInput = z.object({ planId, billingPeriod: billingPeriods });
+export const updateSessionSelectionInput = z.object({ planId, billingPeriod: billingPeriods });
 export const issueOtpInput = z.object({ phoneE164: phone });
 export const verifyOtpInput = z.object({ challengeId: z.string().uuid(), code: z.string().regex(/^\d{4}$/) });
 export const createAccountInput = z.object({
@@ -129,6 +130,45 @@ export async function createContractingSession(input: z.infer<typeof createSessi
     [newFolio(), plan.id, input.billingPeriod, amountForPeriod(plan.monthly_amount_cents, input.billingPeriod), plan.currency, hashOpaqueToken(token)],
   );
   return { session: publicSession(created.rows[0], plan), accessToken: token };
+}
+
+export async function getContractingSession(id: string, accessToken: string) {
+  const session = await requireSession(id, accessToken);
+  const plan = await query<PlanRow>(
+    `SELECT id, name, audience_copy, organization_kind, monthly_amount_cents, currency, display_order
+       FROM subscription_plans WHERE id = $1`,
+    [session.plan_id],
+  );
+  return { session: publicSession(session, plan.rows[0]) };
+}
+
+export async function updateContractingSessionSelection(id: string, accessToken: string, input: z.infer<typeof updateSessionSelectionInput>) {
+  return transaction(async (client) => {
+    const session = await requireSession(id, accessToken, client);
+    if (session.lifecycle_status !== "pending_payment") {
+      throw new ApiError(409, "El plan sólo puede cambiarse antes de iniciar el pago.");
+    }
+    const attempts = await client.query("SELECT 1 FROM payment_attempts WHERE contracting_session_id = $1 LIMIT 1", [id]);
+    if (attempts.rowCount) {
+      throw new ApiError(409, "Ya existe un intento de pago. Regresa al resumen antes de iniciar uno nuevo.");
+    }
+    const planResult = await client.query<PlanRow>(
+      `SELECT id, name, audience_copy, organization_kind, monthly_amount_cents, currency, display_order
+         FROM subscription_plans WHERE id = $1 AND active = true`,
+      [input.planId],
+    );
+    const plan = planResult.rows[0];
+    if (!plan) throw new ApiError(400, "El plan seleccionado ya no está disponible.");
+    const updated = await client.query<ContractingRow>(
+      `UPDATE contracting_sessions
+          SET plan_id = $2, billing_period = $3, quoted_amount_cents = $4, currency = $5
+        WHERE id = $1
+        RETURNING id, folio, plan_id, billing_period, quoted_amount_cents, currency, lifecycle_status, phone_e164, expires_at`,
+      [id, plan.id, input.billingPeriod, amountForPeriod(plan.monthly_amount_cents, input.billingPeriod), plan.currency],
+    );
+    await audit(client, id, "selection.updated", { planId: plan.id, billingPeriod: input.billingPeriod });
+    return { session: publicSession(updated.rows[0], plan) };
+  });
 }
 
 export async function issueOtp(id: string, accessToken: string, input: z.infer<typeof issueOtpInput>) {

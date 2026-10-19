@@ -4,9 +4,10 @@ import express, { type NextFunction, type Request, type Response } from "express
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { z, ZodError } from "zod";
-import { ApiError, createAccount, createAccountInput, createContractingSession, createSessionInput, issueOtp, issueOtpInput, listPlans, verifyOtp, verifyOtpInput } from "./contracting.js";
+import { ApiError, createAccount, createAccountInput, createContractingSession, createSessionInput, getContractingSession, issueOtp, issueOtpInput, listPlans, updateContractingSessionSelection, updateSessionSelectionInput, verifyOtp, verifyOtpInput } from "./contracting.js";
 import { createUploadUrl } from "./storage.js";
 import { bootstrapInput, bootstrapStatus, claimMasterAdministrator } from "./bootstrap.js";
+import { activateConfiguration, activateInput, createCheckout, credentialsInput, listConfigurations, processWebhook, saveCredentials, testConnection, testConnectionInput } from "./mercado-pago.js";
 
 const origins = (process.env.WEB_ORIGIN ?? "").split(",").map((value) => value.trim()).filter(Boolean);
 if (process.env.APP_ENV === "production" && origins.length === 0) throw new Error("WEB_ORIGIN is required in production");
@@ -48,6 +49,12 @@ app.get("/v1/plans", async (_request, response, next) => {
 app.post("/v1/contracting/sessions", contractingLimiter, async (request, response, next) => {
   try { response.status(201).json(await createContractingSession(createSessionInput.parse(request.body))); } catch (error) { next(error); }
 });
+app.get("/v1/contracting/sessions/:id", contractingLimiter, async (request, response, next) => {
+  try { response.json(await getContractingSession(String(request.params.id), accessToken(request))); } catch (error) { next(error); }
+});
+app.patch("/v1/contracting/sessions/:id/selection", contractingLimiter, async (request, response, next) => {
+  try { response.json(await updateContractingSessionSelection(String(request.params.id), accessToken(request), updateSessionSelectionInput.parse(request.body))); } catch (error) { next(error); }
+});
 app.post("/v1/contracting/sessions/:id/otp", otpLimiter, async (request, response, next) => {
   try { response.status(201).json(await issueOtp(String(request.params.id), accessToken(request), issueOtpInput.parse(request.body))); } catch (error) { next(error); }
 });
@@ -56,6 +63,29 @@ app.post("/v1/contracting/sessions/:id/otp/verify", otpLimiter, async (request, 
 });
 app.post("/v1/contracting/sessions/:id/account", contractingLimiter, async (request, response, next) => {
   try { response.status(201).json(await createAccount(String(request.params.id), accessToken(request), createAccountInput.parse(request.body))); } catch (error) { next(error); }
+});
+app.post("/v1/contracting/sessions/:id/payments/mercado-pago", contractingLimiter, async (request, response, next) => {
+  try { response.status(201).json(await createCheckout(String(request.params.id), accessToken(request))); } catch (error) { next(error); }
+});
+app.post("/v1/webhooks/mercado-pago", async (request, response, next) => {
+  try {
+    const sessionId = String(request.query.session_id ?? ""); const paymentId = String(request.query["data.id"] ?? request.body?.data?.id ?? "");
+    if (!z.string().uuid().safeParse(sessionId).success || !paymentId) throw new ApiError(400, "Notificación de pago inválida.");
+    await processWebhook(sessionId, paymentId, request.get("x-signature"), request.get("x-request-id")); response.status(200).end();
+  } catch (error) { next(error); }
+});
+
+app.get("/v1/admin/payment-providers/mercado-pago", otpLimiter, async (request, response, next) => {
+  try { response.json(await listConfigurations(String(request.get("x-admin-pin") ?? ""))); } catch (error) { next(error); }
+});
+app.put("/v1/admin/payment-providers/mercado-pago/credentials", otpLimiter, async (request, response, next) => {
+  try { await saveCredentials(credentialsInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); }
+});
+app.post("/v1/admin/payment-providers/mercado-pago/test", otpLimiter, async (request, response, next) => {
+  try { response.json(await testConnection(testConnectionInput.parse(request.body))); } catch (error) { next(error); }
+});
+app.post("/v1/admin/payment-providers/mercado-pago/activate", otpLimiter, async (request, response, next) => {
+  try { await activateConfiguration(activateInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); }
 });
 
 const uploadInput = z.object({ taxpayerId: z.string().uuid(), filename: z.string().min(1).max(180), contentType: z.enum(["application/pdf", "image/jpeg", "image/png"]) });
