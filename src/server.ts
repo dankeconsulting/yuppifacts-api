@@ -7,7 +7,7 @@ import { z, ZodError } from "zod";
 import { ApiError, createAccount, createAccountInput, createContractingSession, createSessionInput, getContractingSession, issueOtp, issueOtpInput, listPlans, updateContractingSessionSelection, updateSessionSelectionInput, verifyOtp, verifyOtpInput } from "./contracting.js";
 import { createUploadUrl } from "./storage.js";
 import { createPromotionVoucher, createPromotionVoucherInput, submitPromotionVoucher, submitPromotionVoucherInput } from "./promotionVouchers.js";
-import { getPromotionConfig, savePromotionConfig } from "./promotionConfig.js";
+import { getPromotionConfig, promotionConfigInput, savePromotionConfig } from "./promotionConfig.js";
 import { createPromotionContract, createPromotionContractInput, promotionAccessInput, promotionPaymentStatus } from "./promotionContracts.js";
 import { bootstrapInput, bootstrapStatus, claimMasterAdministrator } from "./bootstrap.js";
 import { activateConfiguration, activateInput, createCheckout, createPromotionCheckout, credentialsInput, listConfigurations, processPromotionWebhook, processWebhook, saveCredentials, testConnection, testConnectionInput } from "./mercado-pago.js";
@@ -57,7 +57,7 @@ app.post("/v1/promotions/contracts/:id/mercado-pago", contractingLimiter, async 
 app.get("/v1/promotions/contracts/:id/payment-status", contractingLimiter, async (request, response, next) => { try { response.json(await promotionPaymentStatus(promotionAccessInput.parse({promotionId:request.params.id,promotionToken:request.get("x-promotion-token")}))); } catch (error) { next(error); } });
 app.post("/v1/webhooks/mercado-pago/promotion", async (request, response, next) => { try { const promotionId = String(request.query.promotion_id ?? ""); const paymentId = String(request.query["data.id"] ?? request.body?.data?.id ?? ""); if (!z.string().uuid().safeParse(promotionId).success || !paymentId) throw new ApiError(400, "Notificación de pago inválida."); await processPromotionWebhook(promotionId, paymentId, request.get("x-signature"), request.get("x-request-id")); response.status(200).end(); } catch (error) { next(error); } });
 app.get("/v1/admin/promotion", otpLimiter, async (request, response, next) => { try { response.json(await getPromotionConfig(String(request.get("x-admin-pin") ?? ""))); } catch (error) { next(error); } });
-app.put("/v1/admin/promotion", otpLimiter, async (request, response, next) => { try { await savePromotionConfig(z.object({pin:z.string().regex(/^\d{4,12}$/),isEnabled:z.boolean()}).parse(request.body)); response.status(204).end(); } catch (error) { next(error); } });
+app.put("/v1/admin/promotion", otpLimiter, async (request, response, next) => { try { await savePromotionConfig(promotionConfigInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); } });
 app.get("/v1/admin/landing-modal", otpLimiter, async (request, response, next) => { try { response.json(await getLandingModal(String(request.get("x-admin-pin") ?? ""))); } catch (error) { next(error); } });
 app.put("/v1/admin/landing-modal", otpLimiter, async (request, response, next) => { try { await saveLandingModal(landingModalInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); } });
 const uploadInput = z.object({ taxpayerId: z.string().uuid(), filename: z.string().min(1).max(180), contentType: z.enum(["application/pdf", "image/jpeg", "image/png"]) });
