@@ -9,30 +9,38 @@ import { createUploadUrl } from "./storage.js";
 import { bootstrapInput, bootstrapStatus, claimMasterAdministrator } from "./bootstrap.js";
 import { activateConfiguration, activateInput, createCheckout, credentialsInput, listConfigurations, processWebhook, saveCredentials, testConnection, testConnectionInput } from "./mercado-pago.js";
 import { getLandingModal, saveLandingModal } from "./landingModalConfig.js";
+import { completeLogin, completeLoginInput, getAccessSession, issueLoginCode, issueLoginCodeInput, verifyLoginCode, verifyLoginCodeInput } from "./access.js";
+import { hashIp } from "./security.js";
 
 const origins = (process.env.WEB_ORIGIN ?? "").split(",").map((value) => value.trim()).filter(Boolean);
 if (process.env.APP_ENV === "production" && origins.length === 0) throw new Error("WEB_ORIGIN is required in production");
 const app = express();
 app.disable("x-powered-by"); app.set("trust proxy", 1);
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-app.use(cors({ origin(origin, callback) { if (!origin || origins.includes(origin)) return callback(null, true); return callback(new ApiError(403, "Origen no autorizado.")); }, credentials: false, methods: ["GET", "POST", "PUT", "PATCH"], allowedHeaders: ["content-type", "x-contracting-token", "x-admin-pin"] }));
+app.use(cors({ origin(origin, callback) { if (!origin || origins.includes(origin)) return callback(null, true); return callback(new ApiError(403, "Origen no autorizado.")); }, credentials: false, methods: ["GET", "POST", "PUT", "PATCH"], allowedHeaders: ["content-type", "x-contracting-token", "x-admin-pin", "x-application-token"] }));
 app.use(express.json({ limit: "1mb" }));
 const contractingLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 40, standardHeaders: "draft-8", legacyHeaders: false });
 const otpLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false });
+const loginLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 12, standardHeaders: "draft-8", legacyHeaders: false });
 function accessToken(request: Request) { const token = request.get("x-contracting-token"); if (!token || token.length < 32) throw new ApiError(401, "Sesión de contratación no válida."); return token; }
+function applicationToken(request: Request) { const token = request.get("x-application-token"); if (!token || token.length < 32) throw new ApiError(401, "Sesión no válida."); return token; }
 const landingModalInput = z.object({ pin: z.string().regex(/^\d{4,12}$/).optional(), isEnabled: z.boolean(), titleEs: z.string().min(3).max(140), bodyEs: z.string().min(3).max(500), ctaEs: z.string().min(2).max(80), titleEn: z.string().min(3).max(140), bodyEn: z.string().min(3).max(500), ctaEn: z.string().min(2).max(80) });
 
 app.get("/health", (_request, response) => response.json({ status: "ok", service: "yuppifacts-api" }));
 app.get("/v1/bootstrap/status", async (_request, response, next) => { try { response.json(await bootstrapStatus()); } catch (error) { next(error); } });
 app.post("/v1/bootstrap/master-administrator", otpLimiter, async (request, response, next) => { try { response.status(201).json(await claimMasterAdministrator(bootstrapInput.parse(request.body))); } catch (error) { next(error); } });
 app.get("/v1/plans", async (_request, response, next) => { try { response.json({ plans: await listPlans() }); } catch (error) { next(error); } });
+app.post("/v1/access/code", loginLimiter, async (request, response, next) => { try { response.status(201).json(await issueLoginCode(issueLoginCodeInput.parse(request.body))); } catch (error) { next(error); } });
+app.post("/v1/access/code/verify", loginLimiter, async (request, response, next) => { try { response.json(await verifyLoginCode(verifyLoginCodeInput.parse(request.body))); } catch (error) { next(error); } });
+app.post("/v1/access/pin", loginLimiter, async (request, response, next) => { try { response.json(await completeLogin(completeLoginInput.parse(request.body), { ipHash: hashIp(request.ip), userAgent: request.get("user-agent") })); } catch (error) { next(error); } });
+app.get("/v1/access/session", loginLimiter, async (request, response, next) => { try { response.json(await getAccessSession(applicationToken(request))); } catch (error) { next(error); } });
 app.post("/v1/contracting/sessions", contractingLimiter, async (request, response, next) => { try { response.status(201).json(await createContractingSession(createSessionInput.parse(request.body))); } catch (error) { next(error); } });
 app.get("/v1/contracting/sessions/:id", contractingLimiter, async (request, response, next) => { try { response.json(await getContractingSession(String(request.params.id), accessToken(request))); } catch (error) { next(error); } });
 app.patch("/v1/contracting/sessions/:id/selection", contractingLimiter, async (request, response, next) => { try { response.json(await updateContractingSessionSelection(String(request.params.id), accessToken(request), updateSessionSelectionInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/contracting/sessions/:id/otp", otpLimiter, async (request, response, next) => { try { response.status(201).json(await issueOtp(String(request.params.id), accessToken(request), issueOtpInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/contracting/sessions/:id/otp/verify", otpLimiter, async (request, response, next) => { try { response.json(await verifyOtp(String(request.params.id), accessToken(request), verifyOtpInput.parse(request.body))); } catch (error) { next(error); } });
-app.post("/v1/contracting/sessions/:id/account", contractingLimiter, async (request, response, next) => { try { response.status(201).json(await createAccount(String(request.params.id), accessToken(request), createAccountInput.parse(request.body))); } catch (error) { next(error); } });
-app.post("/v1/contracting/sessions/:id/payments/mercado-pago", contractingLimiter, async (request, response, next) => { try { response.status(201).json(await createCheckout(String(request.params.id), accessToken(request))); } catch (error) { next(error); } });
+app.post("/v1/contracting/sessions/:id/account", contractingLimiter, async (request, response, next) => { try { response.json(await createAccount(String(request.params.id), accessToken(request), createAccountInput.parse(request.body))); } catch (error) { next(error); } });
+app.post("/v1/contracting/sessions/:id/payments/mercado-pago", contractingLimiter, async (request, response, next) => { try { response.json(await createCheckout(String(request.params.id), accessToken(request))); } catch (error) { next(error); } });
 app.post("/v1/webhooks/mercado-pago", async (request, response, next) => { try { const sessionId = String(request.query.session_id ?? ""); const paymentId = String(request.query["data.id"] ?? request.body?.data?.id ?? ""); if (!z.string().uuid().safeParse(sessionId).success || !paymentId) throw new ApiError(400, "Notificación de pago inválida."); await processWebhook(sessionId, paymentId, request.get("x-signature"), request.get("x-request-id")); response.status(200).end(); } catch (error) { next(error); } });
 app.get("/v1/admin/payment-providers/mercado-pago", otpLimiter, async (request, response, next) => { try { response.json(await listConfigurations(String(request.get("x-admin-pin") ?? ""))); } catch (error) { next(error); } });
 app.put("/v1/admin/payment-providers/mercado-pago/credentials", otpLimiter, async (request, response, next) => { try { await saveCredentials(credentialsInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); } });
@@ -43,6 +51,6 @@ app.get("/v1/admin/landing-modal", otpLimiter, async (request, response, next) =
 app.put("/v1/admin/landing-modal", otpLimiter, async (request, response, next) => { try { await saveLandingModal(landingModalInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); } });
 const uploadInput = z.object({ taxpayerId: z.string().uuid(), filename: z.string().min(1).max(180), contentType: z.enum(["application/pdf", "image/jpeg", "image/png"]) });
 app.post("/v1/documents/upload-url", async (request, response, next) => { try { response.status(201).json(await createUploadUrl(uploadInput.parse(request.body))); } catch (error) { next(error); } });
-app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => { if (error instanceof ApiError) return response.status(error.status).json({ error: error.message }); if (error instanceof ZodError) return response.status(400).json({ error: "Datos inválidos", details: error.flatten() }); console.error(error); return response.status(500).json({ error: "Error interno" }); });
+app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => { if (error instanceof ApiError) return response.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) }); if (error instanceof ZodError) return response.status(400).json({ error: "Datos inválidos", details: error.flatten() }); console.error(error); return response.status(500).json({ error: "Error interno" }); });
 const port = Number(process.env.PORT ?? 10000);
 app.listen(port, () => console.info(`YuppiFacts API ready on ${port}`));

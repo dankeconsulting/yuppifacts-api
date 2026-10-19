@@ -14,8 +14,6 @@ export const verifyOtpInput = z.object({ challengeId: z.string().uuid(), code: z
 export const createAccountInput = z.object({
   fullName: z.string().trim().min(3).max(160),
   email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
-  username: z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9._-]{2,29}$/),
-  password: z.string().min(12).max(128),
   pin: z.string().regex(/^\d{4}$/),
 });
 
@@ -42,7 +40,7 @@ type ContractingRow = {
 };
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) {
+  constructor(public readonly status: number, message: string, public readonly code?: string) {
     super(message);
   }
 }
@@ -240,12 +238,12 @@ export async function createAccount(id: string, accessToken: string, input: z.in
     if (session.lifecycle_status !== "phone_verified" || !session.phone_e164) {
       throw new ApiError(409, "Primero verifica tu número de WhatsApp.");
     }
-    const conflict = await client.query("SELECT 1 FROM users WHERE email = $1 OR lower(username) = lower($2) OR phone_e164 = $3", [input.email, input.username, session.phone_e164]);
+    const conflict = await client.query("SELECT 1 FROM users WHERE email = $1 OR phone_e164 = $2", [input.email, session.phone_e164]);
     if (conflict.rowCount) throw new ApiError(409, "Ya existe una cuenta con esos datos.");
     const user = await client.query<{ id: string }>(
-      `INSERT INTO users (email, full_name, username, phone_e164, password_hash, pin_hash, phone_verified_at)
-       VALUES ($1, $2, $3, $4, $5, $6, now()) RETURNING id`,
-      [input.email, input.fullName, input.username, session.phone_e164, await hashSecret(input.password), await hashSecret(input.pin)],
+      `INSERT INTO users (email, full_name, phone_e164, pin_hash, phone_verified_at)
+       VALUES ($1, $2, $3, $4, now()) RETURNING id`,
+      [input.email, input.fullName, session.phone_e164, await hashSecret(input.pin)],
     );
     const updated = await client.query<ContractingRow>(
       `UPDATE contracting_sessions SET user_id = $2, lifecycle_status = 'pending_payment' WHERE id = $1
