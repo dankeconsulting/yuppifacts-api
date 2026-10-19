@@ -6,6 +6,7 @@ import helmet from "helmet";
 import { z, ZodError } from "zod";
 import { ApiError, createAccount, createAccountInput, createContractingSession, createSessionInput, getContractingSession, issueOtp, issueOtpInput, listPlans, updateContractingSessionSelection, updateSessionSelectionInput, verifyOtp, verifyOtpInput } from "./contracting.js";
 import { createUploadUrl } from "./storage.js";
+import { createPromotionVoucher, createPromotionVoucherInput, submitPromotionVoucher, submitPromotionVoucherInput } from "./promotionVouchers.js";
 import { bootstrapInput, bootstrapStatus, claimMasterAdministrator } from "./bootstrap.js";
 import { activateConfiguration, activateInput, createCheckout, credentialsInput, listConfigurations, processWebhook, saveCredentials, testConnection, testConnectionInput } from "./mercado-pago.js";
 import { getLandingModal, saveLandingModal } from "./landingModalConfig.js";
@@ -22,6 +23,7 @@ app.use(express.json({ limit: "1mb" }));
 const contractingLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 40, standardHeaders: "draft-8", legacyHeaders: false });
 const otpLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false });
 const loginLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 12, standardHeaders: "draft-8", legacyHeaders: false });
+const voucherLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 8, standardHeaders: "draft-8", legacyHeaders: false });
 function accessToken(request: Request) { const token = request.get("x-contracting-token"); if (!token || token.length < 32) throw new ApiError(401, "Sesión de contratación no válida."); return token; }
 function applicationToken(request: Request) { const token = request.get("x-application-token"); if (!token || token.length < 32) throw new ApiError(401, "Sesión no válida."); return token; }
 const landingModalInput = z.object({ pin: z.string().regex(/^\d{4,12}$/).optional(), isEnabled: z.boolean(), titleEs: z.string().min(3).max(140), bodyEs: z.string().min(3).max(500), ctaEs: z.string().min(2).max(80), titleEn: z.string().min(3).max(140), bodyEn: z.string().min(3).max(500), ctaEn: z.string().min(2).max(80) });
@@ -51,6 +53,8 @@ app.get("/v1/admin/landing-modal", otpLimiter, async (request, response, next) =
 app.put("/v1/admin/landing-modal", otpLimiter, async (request, response, next) => { try { await saveLandingModal(landingModalInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); } });
 const uploadInput = z.object({ taxpayerId: z.string().uuid(), filename: z.string().min(1).max(180), contentType: z.enum(["application/pdf", "image/jpeg", "image/png"]) });
 app.post("/v1/documents/upload-url", async (request, response, next) => { try { response.status(201).json(await createUploadUrl(uploadInput.parse(request.body))); } catch (error) { next(error); } });
+app.post("/v1/promotion-vouchers", voucherLimiter, async (request, response, next) => { try { response.status(201).json(await createPromotionVoucher(createPromotionVoucherInput.parse(request.body))); } catch (error) { next(error); } });
+app.post("/v1/promotion-vouchers/:id/submit", voucherLimiter, async (request, response, next) => { try { response.json(await submitPromotionVoucher(submitPromotionVoucherInput.parse({ id: request.params.id }))); } catch (error) { next(error); } });
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => { if (error instanceof ApiError) return response.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) }); if (error instanceof ZodError) return response.status(400).json({ error: "Datos inválidos", details: error.flatten() }); console.error(error); return response.status(500).json({ error: "Error interno" }); });
 const port = Number(process.env.PORT ?? 10000);
 app.listen(port, () => console.info(`YuppiFacts API ready on ${port}`));
