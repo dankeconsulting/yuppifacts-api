@@ -4,6 +4,7 @@ import { decryptCredential, encryptCredential, maskCredential } from "./credenti
 import { ApiError } from "./contracting.js";
 import { query, transaction } from "./db.js";
 import { hashOpaqueToken, safeEqualSecret, verifySecret } from "./security.js";
+import { promotionAccessInput, requirePromotionContract } from "./promotionContracts.js";
 
 const environment = z.enum(["sandbox", "production"]);
 export const credentialsInput = z.object({ pin: z.string().regex(/^\d{4,12}$/), environment, publicKey: z.string().trim().min(10).max(300), accessToken: z.string().trim().min(10).max(500), webhookSecret: z.string().trim().min(16).max(500) });
@@ -86,6 +87,37 @@ export async function createCheckout(sessionId: string, accessToken: string) {
   return { checkoutUrl: config.environment === "sandbox" ? preference.sandbox_init_point ?? preference.init_point : preference.init_point, preferenceId: preference.id };
 }
 
+const promotionTitles: Record<string, string> = { independent_accountant: "Contador independiente", accounting_firm: "Despacho contable", company: "Empresa", corporate: "Corporativo" };
+
+export async function createPromotionCheckout(promotionId: string, accessToken: string) {
+  const contract = await requirePromotionContract(promotionAccessInput.parse({ promotionId, promotionToken: accessToken }));
+  if (!['pending_payment', 'checkout_started'].includes(contract.lifecycle_status)) throw new ApiError(409, "Esta contratación no está disponible para pago.");
+  const config = await activeConfiguration();
+  const apiUrl = process.env.API_PUBLIC_URL?.replace(/\/$/, "");
+  const ticketsUrl = (process.env.PROMOTION_TICKETS_URL ?? "https://tickets.yuppifacts.com").replace(/\/$/, "");
+  if (!apiUrl) throw new ApiError(503, "Falta la URL pública del API para iniciar Mercado Pago.");
+  const reference = `${contract.folio}-${Date.now()}`;
+  const returnUrl = `${ticketsUrl}/?payment=success#promo=${contract.id}.${accessToken}`;
+  const preferenceResponse = await fetch("https://api.mercadopago.com/checkout/preferences", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${decryptCredential(config.access_token_encrypted)}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      items: [{ title: `YuppiFacts · ${promotionTitles[contract.plan_id] ?? contract.plan_id} · ${contract.billing_period}`, quantity: 1, currency_id: contract.currency.trim(), unit_price: contract.quoted_amount_cents / 100 }],
+      external_reference: contract.folio,
+      notification_url: `${apiUrl}/v1/webhooks/mercado-pago/promotion?promotion_id=${contract.id}`,
+      back_urls: { success: returnUrl, failure: `${ticketsUrl}/?payment=failure#promo=${contract.id}.${accessToken}`, pending: `${ticketsUrl}/?payment=pending#promo=${contract.id}.${accessToken}` },
+      auto_return: "approved",
+    }),
+  });
+  const preference = await preferenceResponse.json().catch(() => null) as { id?: string; init_point?: string; sandbox_init_point?: string; message?: string } | null;
+  if (!preferenceResponse.ok || !preference?.id || !(preference.init_point || preference.sandbox_init_point)) throw new ApiError(502, preference?.message ?? "No fue posible crear el pago en Mercado Pago.");
+  await transaction(async (client) => {
+    await client.query("INSERT INTO promotion_payment_attempts (promotion_contract_id, provider_reference, amount_cents, currency, environment, provider_payload) VALUES ($1,$2,$3,$4,$5,$6)", [contract.id, preference.id, contract.quoted_amount_cents, contract.currency, config.environment, JSON.stringify({ reference })]);
+    await client.query("UPDATE promotion_contracts SET lifecycle_status = 'checkout_started' WHERE id = $1", [contract.id]);
+  });
+  return { checkoutUrl: config.environment === "sandbox" ? preference.sandbox_init_point ?? preference.init_point : preference.init_point, preferenceId: preference.id };
+}
+
 function signatureValue(header: string | undefined, key: string) {
   return header?.split(",").map((part) => part.trim().split("=")).find(([name]) => name === key)?.[1];
 }
@@ -107,4 +139,22 @@ export async function processWebhook(sessionId: string, paymentId: string, xSign
   const paymentStatus = statusMap[payment.status] ?? "under_review";
   const sessionStatus = payment.status === "approved" ? "payment_verified" : payment.status === "rejected" ? "pending_payment" : "checkout_started";
   await transaction(async (client) => { await client.query("UPDATE payment_attempts SET status = $2, provider_payload = provider_payload || $3::jsonb, approved_at = CASE WHEN $2 = 'approved' THEN now() ELSE approved_at END WHERE id = $1", [paymentAttempt.id, paymentStatus, JSON.stringify({ paymentId: String(payment.id), paymentStatus: payment.status })]); await client.query("UPDATE contracting_sessions SET lifecycle_status = $2 WHERE id = $1", [sessionId, sessionStatus]); await client.query("INSERT INTO contracting_audit_events (contracting_session_id, event_type, metadata) VALUES ($1, 'mercado_pago.webhook_processed', $2)", [sessionId, JSON.stringify({ paymentId, paymentStatus: payment.status })]); });
+}
+
+export async function processPromotionWebhook(promotionId: string, paymentId: string, xSignature: string | undefined, xRequestId: string | undefined) {
+  const attempt = await query<{ id: string; environment: "sandbox" | "production" }>("SELECT id, environment FROM promotion_payment_attempts WHERE promotion_contract_id = $1 ORDER BY created_at DESC LIMIT 1", [promotionId]);
+  const paymentAttempt = attempt.rows[0];
+  if (!paymentAttempt) throw new ApiError(404, "Intento de pago promocional no encontrado.");
+  const config = await configurationFor(paymentAttempt.environment);
+  const timestamp = signatureValue(xSignature, "ts"); const expected = signatureValue(xSignature, "v1");
+  if (!timestamp || !expected || !xRequestId) throw new ApiError(401, "Firma de Mercado Pago incompleta.");
+  const manifest = `id:${paymentId};request-id:${xRequestId};ts:${timestamp};`;
+  const calculated = createHmac("sha256", decryptCredential(config.webhook_secret_encrypted)).update(manifest).digest("hex");
+  if (!safeEqualSecret(calculated, expected)) throw new ApiError(401, "Firma de Mercado Pago inválida.");
+  const response = await fetch(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(paymentId)}`, { headers: { Authorization: `Bearer ${decryptCredential(config.access_token_encrypted)}` } });
+  const payment = await response.json().catch(() => null) as { status?: string; id?: number | string } | null;
+  if (!response.ok || !payment?.status) throw new ApiError(502, "No fue posible verificar el pago con Mercado Pago.");
+  const paymentStatus = ({ approved: "approved", rejected: "rejected", cancelled: "cancelled", refunded: "cancelled", in_process: "under_review", pending: "pending" } as Record<string, string>)[payment.status] ?? "under_review";
+  const contractStatus = payment.status === "approved" ? "payment_verified" : payment.status === "rejected" ? "pending_payment" : "checkout_started";
+  await transaction(async (client) => { await client.query("UPDATE promotion_payment_attempts SET status=$2, provider_payload=provider_payload || $3::jsonb, approved_at=CASE WHEN $2='approved' THEN now() ELSE approved_at END WHERE id=$1", [paymentAttempt.id, paymentStatus, JSON.stringify({ paymentId: String(payment.id), paymentStatus: payment.status })]); await client.query("UPDATE promotion_contracts SET lifecycle_status=$2 WHERE id=$1", [promotionId, contractStatus]); });
 }
