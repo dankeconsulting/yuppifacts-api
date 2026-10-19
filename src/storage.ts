@@ -5,7 +5,8 @@ export async function createUploadUrl(input:{taxpayerId:string;filename:string;c
 export async function createPromotionVoucherUploadUrl(input:{voucherId:string;filename:string;contentType:"application/pdf"|"image/jpeg"|"image/png"}) {
   if (!bucket) throw new Error("AWS_S3_BUCKET is required");
   const safeName=input.filename.replace(/[^a-zA-Z0-9._-]/g,"_");
-  const key=`promotion-vouchers/${input.voucherId}/${safeName}`;
+  const prefix=(process.env.AWS_S3_PROMOTION_PREFIX ?? "dankeconsulting/yuppifacts/promotions/vouchers").replace(/^\/+|\/+$/g, "");
+  const key=`${prefix}/${input.voucherId}/${safeName}`;
   const command=new PutObjectCommand({Bucket:bucket,Key:key,ContentType:input.contentType,ServerSideEncryption:"aws:kms",SSEKMSKeyId:process.env.AWS_KMS_KEY_ID||undefined,Metadata:{voucherId:input.voucherId}});
   return { key, uploadUrl:await getSignedUrl(client,command,{expiresIn:300}),expiresIn:300 };
 }
