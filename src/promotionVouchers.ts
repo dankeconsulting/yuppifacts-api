@@ -4,6 +4,7 @@ import { ApiError } from "./contracting.js";
 import { createPromotionVoucherUploadUrl, verifyPromotionVoucherUpload } from "./storage.js";
 import { deliverPromotionEmail, queuePromotionEmail } from "./promotionNotifications.js";
 import { promotionAccessInput, requirePromotionContract } from "./promotionContracts.js";
+import { verifySecret } from "./security.js";
 
 const phone = z.string().regex(/^\+[1-9]\d{7,14}$/, "Número de WhatsApp inválido");
 const documentType = z.enum(["application/pdf", "image/jpeg", "image/png"]);
@@ -29,8 +30,13 @@ export const createPromotionVoucherInput = z.object({
 });
 
 export const submitPromotionVoucherInput = z.object({ id: z.string().uuid() });
+export const promotionVoucherReviewsInput = z.object({ pin: z.string().regex(/^\d{4,12}$/) });
+export const reviewPromotionVoucherInput = promotionVoucherReviewsInput.extend({ voucherId: z.string().uuid(), approved: z.boolean() });
 
 type VoucherRow = { id: string; storage_key: string; status: string; content_type: "application/pdf" | "image/jpeg" | "image/png"; byte_size: number; full_name:string; email:string };
+type ReviewRow = { id:string; full_name:string; email:string; phone_e164:string; original_filename:string; status:string; submitted_at:Date|null; promotion_contract_id:string|null; folio:string|null; plan_id:string|null; billing_period:string|null; quoted_amount_cents:number|null };
+
+async function requireMasterPin(pin:string){const result=await query<{id:string;pin_hash:string}>("SELECT id,pin_hash FROM users WHERE platform_role='master_admin' AND account_status='active' AND deleted_at IS NULL LIMIT 1");const admin=result.rows[0];if(!admin||!(await verifySecret(pin,admin.pin_hash)))throw new ApiError(401,"PIN administrativo no válido.");return admin.id;}
 
 function validateState(country: z.infer<typeof countryCode>, state: string) {
   if (!countries[country].includes(state as never)) throw new ApiError(400, "Selecciona un estado o departamento válido.");
@@ -73,3 +79,7 @@ export async function submitPromotionVoucher(input: z.infer<typeof submitPromoti
   await query(`UPDATE promotion_contracts SET lifecycle_status='voucher_submitted' WHERE id=(SELECT promotion_contract_id FROM promotion_vouchers WHERE id=$1) AND lifecycle_status IN ('draft','pending_payment')`,[voucher.id]);
   return { voucherId: result.rows[0].id, status: "submitted" as const };
 }
+
+export async function listPromotionVoucherReviews(input:z.infer<typeof promotionVoucherReviewsInput>){await requireMasterPin(input.pin);const result=await query<ReviewRow>(`SELECT voucher.id,voucher.full_name,voucher.email,voucher.phone_e164,voucher.original_filename,voucher.status,voucher.submitted_at,voucher.promotion_contract_id,contract.folio,contract.plan_id,contract.billing_period,contract.quoted_amount_cents FROM promotion_vouchers voucher LEFT JOIN promotion_contracts contract ON contract.id=voucher.promotion_contract_id WHERE voucher.status IN ('submitted','verified','rejected') ORDER BY voucher.submitted_at DESC NULLS LAST LIMIT 200`);return {vouchers:result.rows.map(voucher=>({id:voucher.id,fullName:voucher.full_name,email:voucher.email,phone:voucher.phone_e164,filename:voucher.original_filename,status:voucher.status,submittedAt:voucher.submitted_at?.toISOString()??null,promotionId:voucher.promotion_contract_id,folio:voucher.folio,planId:voucher.plan_id,billingPeriod:voucher.billing_period,quotedAmountCents:voucher.quoted_amount_cents}))};}
+
+export async function reviewPromotionVoucher(input:z.infer<typeof reviewPromotionVoucherInput>){await requireMasterPin(input.pin);const status=input.approved?'verified':'rejected';const result=await query<{promotion_contract_id:string|null}>("UPDATE promotion_vouchers SET status=$2,reviewed_at=now() WHERE id=$1 AND status='submitted' RETURNING promotion_contract_id",[input.voucherId,status]);const voucher=result.rows[0];if(!voucher)throw new ApiError(409,"Este voucher ya fue revisado o no está disponible.");if(!input.approved&&voucher.promotion_contract_id)await query("UPDATE promotion_contracts SET lifecycle_status='pending_payment' WHERE id=$1 AND lifecycle_status='voucher_submitted'",[voucher.promotion_contract_id]);return {status};}

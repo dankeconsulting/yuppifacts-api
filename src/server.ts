@@ -6,7 +6,7 @@ import helmet from "helmet";
 import { z, ZodError } from "zod";
 import { ApiError, createAccount, createAccountInput, createContractingSession, createSessionInput, getContractingSession, issueOtp, issueOtpInput, listPlans, updateContractingSessionSelection, updateSessionSelectionInput, verifyOtp, verifyOtpInput } from "./contracting.js";
 import { createUploadUrl } from "./storage.js";
-import { createPromotionVoucher, createPromotionVoucherInput, submitPromotionVoucher, submitPromotionVoucherInput } from "./promotionVouchers.js";
+import { createPromotionVoucher, createPromotionVoucherInput, listPromotionVoucherReviews, promotionVoucherReviewsInput, reviewPromotionVoucher, reviewPromotionVoucherInput, submitPromotionVoucher, submitPromotionVoucherInput } from "./promotionVouchers.js";
 import { getPromotionConfig, promotionConfigInput, savePromotionConfig } from "./promotionConfig.js";
 import { createPromotionContract, createPromotionContractInput, promotionAccessInput, promotionPaymentStatus } from "./promotionContracts.js";
 import { bootstrapInput, bootstrapStatus, claimMasterAdministrator } from "./bootstrap.js";
@@ -64,6 +64,8 @@ const uploadInput = z.object({ taxpayerId: z.string().uuid(), filename: z.string
 app.post("/v1/documents/upload-url", async (request, response, next) => { try { response.status(201).json(await createUploadUrl(uploadInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/promotion-vouchers", voucherLimiter, async (request, response, next) => { try { response.status(201).json(await createPromotionVoucher(createPromotionVoucherInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/promotion-vouchers/:id/submit", voucherLimiter, async (request, response, next) => { try { response.json(await submitPromotionVoucher(submitPromotionVoucherInput.parse({ id: request.params.id }))); } catch (error) { next(error); } });
+app.get("/v1/admin/promotion-vouchers", otpLimiter, async (request, response, next) => { try { response.json(await listPromotionVoucherReviews(promotionVoucherReviewsInput.parse({ pin: request.get("x-admin-pin") }))); } catch (error) { next(error); } });
+app.post("/v1/admin/promotion-vouchers/:id/review", otpLimiter, async (request, response, next) => { try { response.json(await reviewPromotionVoucher(reviewPromotionVoucherInput.parse({ pin: request.get("x-admin-pin"), voucherId: request.params.id, approved: request.body?.approved }))); } catch (error) { next(error); } });
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => { if (error instanceof ApiError) return response.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) }); if (error instanceof ZodError) return response.status(400).json({ error: "Datos inválidos", details: error.flatten() }); console.error(error); return response.status(500).json({ error: "Error interno" }); });
 const port = Number(process.env.PORT ?? 10000);
 app.listen(port, () => console.info(`YuppiFacts API ready on ${port}`));
