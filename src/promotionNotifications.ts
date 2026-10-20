@@ -38,3 +38,11 @@ export async function deliverPromotionEmail(id:string) {
     await query("UPDATE promotion_notification_outbox SET status='failed',last_error=$2 WHERE id=$1",[item.id,error instanceof Error ? error.message.slice(0,500) : "SES delivery failed"]);
   }
 }
+
+export async function retryFailedPromotionEmails() {
+  const pending = await query<{id:string}>(`SELECT id FROM promotion_notification_outbox
+    WHERE status = 'failed' AND attempts < 3
+    ORDER BY created_at ASC
+    LIMIT 50`);
+  for (const item of pending.rows) await deliverPromotionEmail(item.id);
+}

@@ -16,6 +16,7 @@ import { activateConfiguration, activateInput, createCheckout, createPromotionCh
 import { getLandingModal, saveLandingModal } from "./landingModalConfig.js";
 import { adminPasswordLoginInput, completeLogin, completeLoginInput, getAccessSession, issueLoginCode, issueLoginCodeInput, loginAdministrator, requireMasterAdministrator, verifyLoginCode, verifyLoginCodeInput } from "./access.js";
 import { hashIp } from "./security.js";
+import { retryFailedPromotionEmails } from "./promotionNotifications.js";
 
 const origins = [...new Set([...(process.env.WEB_ORIGIN ?? "").split(",").map((value) => value.trim()).filter(Boolean), "https://tickets.yuppifacts.com", "https://promo.yuppifacts.com", "https://admin.yuppifacts.com"])];
 if (process.env.APP_ENV === "production" && origins.length === 0) throw new Error("WEB_ORIGIN is required in production");
@@ -79,4 +80,4 @@ app.get("/v1/admin/promotion-vouchers", otpLimiter, async (request, response, ne
 app.post("/v1/admin/promotion-vouchers/:id/review", otpLimiter, async (request, response, next) => { try { response.json(await reviewPromotionVoucher(reviewPromotionVoucherInput.parse({ pin: request.get("x-admin-pin"), voucherId: request.params.id, approved: request.body?.approved }))); } catch (error) { next(error); } });
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => { if (error instanceof ApiError) return response.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) }); if (error instanceof ZodError) return response.status(400).json({ error: "Datos inválidos", details: error.flatten() }); console.error(error); return response.status(500).json({ error: "Error interno" }); });
 const port = Number(process.env.PORT ?? 10000);
-app.listen(port, () => console.info(`YuppiFacts API ready on ${port}`));
+app.listen(port, () => { console.info(`YuppiFacts API ready on ${port}`); void retryFailedPromotionEmails().catch((error) => console.error("Could not retry promotion emails", error)); });
