@@ -10,7 +10,7 @@ type OutboxRow = { id:string; recipient:string; reply_to:string; template:Templa
 function message(template:Template, payload:Record<string,string>) {
   const name = payload.fullName || "";
   if (template === "contract_received") return { subject: "Gracias por contratar la promoción de YuppiFacts", text: `Hola ${name}, recibimos tu contratación promocional. Te avisaremos los siguientes pasos.` };
-  if (template === "voucher_received") return { subject: "Recibimos tu comprobante de pago", text: `Hola ${name}, recibimos tu comprobante. Nuestro equipo lo revisará antes de activar tu cuenta.` };
+  if (template === "voucher_received") { const url=(process.env.PROMOTION_TICKETS_URL ?? "https://tickets.yuppifacts.com").replace(/\/$/, ""); return { subject: "Gracias por registrarte en YuppiFacts", text: `Hola ${name}, gracias por registrarte. Ya recibimos tu voucher y aún estamos procesando tu suscripción. Una vez verificado tu pago procederemos a activar tu cuenta. Confirma y consulta el estado de tu suscripción aquí: ${url}`, html: `<p>Hola ${name},</p><p>Gracias por registrarte en YuppiFacts. Ya recibimos tu voucher y aún estamos procesando tu suscripción. Una vez verificado tu pago procederemos a activar tu cuenta.</p><p><a href="${url}" style="display:inline-block;padding:12px 18px;background:#9c7af2;color:#160f22;border-radius:8px;text-decoration:none;font-weight:700">Confirmar mi suscripción</a></p>` }; }
   if (template === "advisor_assigned") return { subject: "Tu asesor de YuppiFacts", text: `Hola ${name}, tu asesor asignado es ${payload.advisorName || "nuestro equipo"}. Te contactará para continuar.` };
   return { subject: "Tu acceso a YuppiFacts está listo", text: `Hola ${name}, tu cuenta promocional ya está activa. Puedes ingresar a tu panel de trabajo.` };
 }
@@ -32,7 +32,7 @@ export async function deliverPromotionEmail(id:string) {
   }
   const content = message(item.template, item.payload);
   try {
-    const sent = await client.send(new SendEmailCommand({ FromEmailAddress: fromEmail, ReplyToAddresses:[item.reply_to], Destination:{ToAddresses:[item.recipient]}, Content:{Simple:{Subject:{Data:content.subject,Charset:"UTF-8"},Body:{Text:{Data:content.text,Charset:"UTF-8"}}}} }));
+    const sent = await client.send(new SendEmailCommand({ FromEmailAddress: fromEmail, ReplyToAddresses:[item.reply_to], Destination:{ToAddresses:[item.recipient]}, Content:{Simple:{Subject:{Data:content.subject,Charset:"UTF-8"},Body:{Text:{Data:content.text,Charset:"UTF-8"},...("html" in content ? {Html:{Data:content.html,Charset:"UTF-8"}} : {})}}} }));
     await query("UPDATE promotion_notification_outbox SET status='sent',provider_message_id=$2,sent_at=now(),last_error=NULL WHERE id=$1",[item.id,sent.MessageId ?? null]);
   } catch (error) {
     await query("UPDATE promotion_notification_outbox SET status='failed',last_error=$2 WHERE id=$1",[item.id,error instanceof Error ? error.message.slice(0,500) : "SES delivery failed"]);

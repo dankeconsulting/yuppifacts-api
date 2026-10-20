@@ -46,6 +46,10 @@ export async function createPromotionVoucher(input: z.infer<typeof createPromoti
   validateState(input.countryCode, input.stateName);
   if (Boolean(input.promotionId) !== Boolean(input.promotionToken)) throw new ApiError(400, "Falta la referencia de la contratación promocional.");
   const contract = input.promotionId && input.promotionToken ? await requirePromotionContract(promotionAccessInput.parse({promotionId:input.promotionId,promotionToken:input.promotionToken})) : null;
+  if (contract) {
+    const prior = await query<{id:string}>("SELECT id FROM promotion_vouchers WHERE promotion_contract_id=$1 AND status IN ('upload_pending','submitted','verified') LIMIT 1", [contract.id]);
+    if (prior.rows[0]) throw new ApiError(409, "Ya nos enviaste tu voucher. Aún estamos procesando tu suscripción; cuando validemos el pago procederemos a activar tu cuenta.");
+  }
   const voucherId = crypto.randomUUID();
   const upload = await createPromotionVoucherUploadUrl({ voucherId, filename: input.filename, contentType: input.contentType });
   await query(
