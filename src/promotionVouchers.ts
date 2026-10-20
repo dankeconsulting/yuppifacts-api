@@ -55,7 +55,7 @@ export async function createPromotionVoucher(input: z.infer<typeof createPromoti
         AND voucher.phone_e164 = $3
         AND prior_contract.plan_id = current_contract.plan_id
         AND prior_contract.quoted_amount_cents = current_contract.quoted_amount_cents
-        AND voucher.status IN ('upload_pending','submitted','verified')
+        AND voucher.status IN ('submitted','verified')
       LIMIT 1`, [contract.id, input.email, input.phoneE164]);
     if (prior.rows[0]) throw new ApiError(409, "Ya nos enviaste tu voucher. Aún estamos procesando tu suscripción; cuando validemos el pago procederemos a activar tu cuenta.");
   }
