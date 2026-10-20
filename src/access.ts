@@ -120,3 +120,9 @@ export async function getAccessSession(token: string) {
   if (!user || user.account_status !== "active" || !user.is_online) throw new ApiError(401, "Tu sesión ya no está disponible.");
   return { account: accountSummary(user) };
 }
+
+export async function requireMasterAdministrator(token: string) {
+  const session = await getAccessSession(token);
+  if (session.account.role !== "master_admin") throw new ApiError(403, "Esta acción requiere una sesión de administrador maestro.");
+  return session.account;
+}
