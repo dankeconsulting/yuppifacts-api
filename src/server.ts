@@ -9,6 +9,7 @@ import { createUploadUrl } from "./storage.js";
 import { createPromotionVoucher, createPromotionVoucherInput, listPromotionVoucherReviews, promotionVoucherReviewsInput, reviewPromotionVoucher, reviewPromotionVoucherInput, submitPromotionVoucher, submitPromotionVoucherInput } from "./promotionVouchers.js";
 import { getPromotionConfig, promotionConfigInput, savePromotionConfig } from "./promotionConfig.js";
 import { cancelPromotionContract, createPromotionContract, createPromotionContractInput, promotionAccessInput, promotionPaymentStatus } from "./promotionContracts.js";
+import { createPromotionPlan, listPromotionPlans, listPublicPromotionPlans, promotionPlanCreateInput, promotionPlanUpdateInput, updatePromotionPlan } from "./promotionPlans.js";
 import { bootstrapInput, bootstrapStatus, claimMasterAdministrator } from "./bootstrap.js";
 import { activateConfiguration, activateInput, createCheckout, createPromotionCheckout, credentialsInput, listConfigurations, processPromotionWebhook, processWebhook, saveCredentials, testConnection, testConnectionInput } from "./mercado-pago.js";
 import { getLandingModal, saveLandingModal } from "./landingModalConfig.js";
@@ -20,7 +21,7 @@ if (process.env.APP_ENV === "production" && origins.length === 0) throw new Erro
 const app = express();
 app.disable("x-powered-by"); app.set("trust proxy", 1);
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-app.use(cors({ origin(origin, callback) { if (!origin || origins.includes(origin)) return callback(null, true); return callback(new ApiError(403, "Origen no autorizado.")); }, credentials: false, methods: ["GET", "POST", "PUT", "PATCH"], allowedHeaders: ["content-type", "x-contracting-token", "x-admin-pin", "x-application-token"] }));
+app.use(cors({ origin(origin, callback) { if (!origin || origins.includes(origin)) return callback(null, true); return callback(new ApiError(403, "Origen no autorizado.")); }, credentials: false, methods: ["GET", "POST", "PUT", "PATCH"], allowedHeaders: ["content-type", "x-contracting-token", "x-promotion-token", "x-admin-pin", "x-application-token"] }));
 app.use(express.json({ limit: "1mb" }));
 const contractingLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 40, standardHeaders: "draft-8", legacyHeaders: false });
 const otpLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false });
@@ -52,6 +53,7 @@ app.post("/v1/admin/payment-providers/mercado-pago/test", otpLimiter, async (req
 app.post("/v1/admin/payment-providers/mercado-pago/activate", otpLimiter, async (request, response, next) => { try { await activateConfiguration(activateInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); } });
 app.get("/v1/public/landing-modal", async (_request, response, next) => { try { response.json(await getLandingModal()); } catch (error) { next(error); } });
 app.get("/v1/public/promotion", async (_request, response, next) => { try { response.json(await getPromotionConfig()); } catch (error) { next(error); } });
+app.get("/v1/public/promotion/plans", async (_request, response, next) => { try { response.json({ plans: await listPublicPromotionPlans() }); } catch (error) { next(error); } });
 app.post("/v1/promotions/contracts", contractingLimiter, async (request, response, next) => { try { response.status(201).json(await createPromotionContract(createPromotionContractInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/promotions/contracts/:id/mercado-pago", contractingLimiter, async (request, response, next) => { try { response.json(await createPromotionCheckout(String(request.params.id), String(request.get("x-promotion-token") ?? ""))); } catch (error) { next(error); } });
 app.get("/v1/promotions/contracts/:id/payment-status", contractingLimiter, async (request, response, next) => { try { response.json(await promotionPaymentStatus(promotionAccessInput.parse({promotionId:request.params.id,promotionToken:request.get("x-promotion-token")}))); } catch (error) { next(error); } });
@@ -59,6 +61,9 @@ app.post("/v1/promotions/contracts/:id/cancel", contractingLimiter, async (reque
 app.post("/v1/webhooks/mercado-pago/promotion", async (request, response, next) => { try { const promotionId = String(request.query.promotion_id ?? ""); const paymentId = String(request.query["data.id"] ?? request.body?.data?.id ?? ""); if (!z.string().uuid().safeParse(promotionId).success || !paymentId) throw new ApiError(400, "Notificación de pago inválida."); await processPromotionWebhook(promotionId, paymentId, request.get("x-signature"), request.get("x-request-id")); response.status(200).end(); } catch (error) { next(error); } });
 app.get("/v1/admin/promotion", otpLimiter, async (request, response, next) => { try { response.json(await getPromotionConfig(String(request.get("x-admin-pin") ?? ""))); } catch (error) { next(error); } });
 app.put("/v1/admin/promotion", otpLimiter, async (request, response, next) => { try { await savePromotionConfig(promotionConfigInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); } });
+app.get("/v1/admin/promotion/plans", otpLimiter, async (request, response, next) => { try { response.json({ plans: await listPromotionPlans(String(request.get("x-admin-pin") ?? "")) }); } catch (error) { next(error); } });
+app.post("/v1/admin/promotion/plans", otpLimiter, async (request, response, next) => { try { response.status(201).json({ plan: await createPromotionPlan(promotionPlanCreateInput.parse(request.body)) }); } catch (error) { next(error); } });
+app.put("/v1/admin/promotion/plans/:id", otpLimiter, async (request, response, next) => { try { response.json({ plan: await updatePromotionPlan(promotionPlanUpdateInput.parse({ ...request.body, id: request.params.id })) }); } catch (error) { next(error); } });
 app.get("/v1/admin/landing-modal", otpLimiter, async (request, response, next) => { try { response.json(await getLandingModal(String(request.get("x-admin-pin") ?? ""))); } catch (error) { next(error); } });
 app.put("/v1/admin/landing-modal", otpLimiter, async (request, response, next) => { try { await saveLandingModal(landingModalInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); } });
 const uploadInput = z.object({ taxpayerId: z.string().uuid(), filename: z.string().min(1).max(180), contentType: z.enum(["application/pdf", "image/jpeg", "image/png"]) });
