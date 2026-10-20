@@ -13,10 +13,10 @@ import { createPromotionPlan, listPromotionPlans, listPublicPromotionPlans, prom
 import { bootstrapInput, bootstrapStatus, claimMasterAdministrator } from "./bootstrap.js";
 import { activateConfiguration, activateInput, createCheckout, createPromotionCheckout, credentialsInput, listConfigurations, saveCredentials, testConnection, testConnectionInput } from "./mercado-pago.js";
 import { getLandingModal, saveLandingModal } from "./landingModalConfig.js";
-import { completeLogin, completeLoginInput, getAccessSession, issueLoginCode, issueLoginCodeInput, verifyLoginCode, verifyLoginCodeInput } from "./access.js";
+import { adminPasswordLoginInput, completeLogin, completeLoginInput, getAccessSession, issueLoginCode, issueLoginCodeInput, loginAdministrator, verifyLoginCode, verifyLoginCodeInput } from "./access.js";
 import { hashIp } from "./security.js";
 
-const origins = [...new Set([...(process.env.WEB_ORIGIN ?? "").split(",").map((value) => value.trim()).filter(Boolean), "https://tickets.yuppifacts.com", "https://promo.yuppifacts.com"])];
+const origins = [...new Set([...(process.env.WEB_ORIGIN ?? "").split(",").map((value) => value.trim()).filter(Boolean), "https://tickets.yuppifacts.com", "https://promo.yuppifacts.com", "https://admin.yuppifacts.com"])];
 if (process.env.APP_ENV === "production" && origins.length === 0) throw new Error("WEB_ORIGIN is required in production");
 const app = express();
 app.disable("x-powered-by"); app.set("trust proxy", 1);
@@ -38,6 +38,7 @@ app.get("/v1/plans", async (_request, response, next) => { try { response.json({
 app.post("/v1/access/code", loginLimiter, async (request, response, next) => { try { response.status(201).json(await issueLoginCode(issueLoginCodeInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/access/code/verify", loginLimiter, async (request, response, next) => { try { response.json(await verifyLoginCode(verifyLoginCodeInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/access/pin", loginLimiter, async (request, response, next) => { try { response.json(await completeLogin(completeLoginInput.parse(request.body), { ipHash: hashIp(request.ip), userAgent: request.get("user-agent") })); } catch (error) { next(error); } });
+app.post("/v1/access/admin-login", loginLimiter, async (request, response, next) => { try { response.json(await loginAdministrator(adminPasswordLoginInput.parse(request.body), { ipHash: hashIp(request.ip), userAgent: request.get("user-agent") })); } catch (error) { next(error); } });
 app.get("/v1/access/session", loginLimiter, async (request, response, next) => { try { response.json(await getAccessSession(applicationToken(request))); } catch (error) { next(error); } });
 app.post("/v1/contracting/sessions", contractingLimiter, async (request, response, next) => { try { response.status(201).json(await createContractingSession(createSessionInput.parse(request.body))); } catch (error) { next(error); } });
 app.get("/v1/contracting/sessions/:id", contractingLimiter, async (request, response, next) => { try { response.json(await getContractingSession(String(request.params.id), accessToken(request))); } catch (error) { next(error); } });
