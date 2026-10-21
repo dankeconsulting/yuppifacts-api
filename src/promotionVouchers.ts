@@ -133,7 +133,7 @@ export async function submitPromotionVoucher(input: z.infer<typeof submitPromoti
     return submitted.rows[0];
   });
   const emailId = await queuePromotionEmail({ voucherId:voucher.id, recipient:voucher.email, template:"voucher_received", payload:{fullName:voucher.full_name} });
-  void deliverPromotionEmail(emailId);
+  if(emailId) void deliverPromotionEmail(emailId);
   return { voucherId: result.id, status: "submitted" as const };
 }
 

@@ -4,6 +4,7 @@ import { ApiError } from "./contracting.js";
 import { query, transaction } from "./db.js";
 import { hashOpaqueToken, safeEqualSecret, verifySecret } from "./security.js";
 import { promotionAccessInput, requirePromotionContract } from "./promotionContracts.js";
+import { queuePromotionEmail } from "./promotionNotifications.js";
 
 const environment = z.enum(["sandbox", "production"]);
 export const credentialsInput = z.object({ pin: z.string().regex(/^\d{4,12}$/), environment, publicKey: z.string().trim().min(10).max(300), accessToken: z.string().trim().min(10).max(500) });
@@ -110,6 +111,9 @@ export async function createPromotionCheckout(promotionId: string, accessToken: 
     await client.query("INSERT INTO promotion_payment_attempts (promotion_contract_id, provider_reference, amount_cents, currency, environment, provider_payload) VALUES ($1,$2,$3,$4,$5,$6)", [contract.id, preference.id, contract.quoted_amount_cents, contract.currency, config.environment, JSON.stringify({ reference })]);
     await client.query("UPDATE promotion_contracts SET lifecycle_status = 'checkout_started' WHERE id = $1", [contract.id]);
   });
+  const recoveryToken=`${contract.id}.${accessToken}`;
+  const contact=await query<{email:string;full_name:string}>("SELECT email,full_name FROM promotion_contracts WHERE id=$1",[contract.id]);
+  if(contact.rows[0]?.email) await queuePromotionEmail({promotionId:contract.id,recipient:contact.rows[0].email,template:"payment_reminder",payload:{fullName:contact.rows[0].full_name ?? "",ticketsUrl:`${ticketsUrl}/#promo=${recoveryToken}`},deliverAfter:new Date(Date.now()+12*60*60*1000)});
   return { checkoutUrl: config.environment === "sandbox" ? preference.sandbox_init_point ?? preference.init_point : preference.init_point, preferenceId: preference.id };
 }
 
