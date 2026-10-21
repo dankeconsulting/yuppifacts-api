@@ -52,7 +52,7 @@ export async function issueLoginCode(input: z.infer<typeof issueLoginCodeInput>)
     const code = randomOtp();
     const created = await client.query<{ id: string; expires_at: Date }>(
       `INSERT INTO access_challenges (user_id, phone_e164, purpose, code_hash, expires_at, resend_available_at)
-       VALUES ($1, $2, 'login_phone', $3, now() + interval '5 minutes', now() + interval '1 minute')
+       VALUES ($1, $2, 'login_phone', $3, now() + interval '1 minute', now() + interval '1 minute')
        RETURNING id, expires_at`,
       [user.id, user.phone_e164, await hashSecret(code)],
     );
