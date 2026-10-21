@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { ApiError } from "./contracting.js";
-import { query } from "./db.js";
+import { query, transaction } from "./db.js";
 
 const id=z.string().regex(/^[a-z0-9_]{2,80}$/,"El identificador del plan no es válido.");
 const amount=z.number().int().positive().nullable();
 export const landingPlanInput=z.object({id,title:z.string().trim().min(2).max(80),subtitle:z.string().trim().max(40).nullable(),description:z.string().trim().min(2).max(240),audience:z.string().trim().min(2).max(300),benefits:z.array(z.string().trim().min(2).max(160)).max(20),monthlyAmountCents:amount,quarterlyAmountCents:amount,semiannualAmountCents:amount,annualAmountCents:amount,active:z.boolean(),displayOrder:z.number().int().min(0).max(32000)});
 export const landingPlanCreateInput=landingPlanInput;
 export const landingPlanUpdateInput=landingPlanInput.extend({id});
+export const landingPlanIdInput=z.object({id});
+export const landingPlanOrderInput=z.object({ids:z.array(id).min(1).max(100)});
 type Row={id:z.infer<typeof id>;title:string;subtitle:string|null;description:string;audience:string;benefits:string[];monthly_amount_cents:number|null;quarterly_amount_cents:number|null;semiannual_amount_cents:number|null;annual_amount_cents:number|null;active:boolean;display_order:number};
 const publicPlan=(row:Row)=>({id:row.id,title:row.title,subtitle:row.subtitle,description:row.description,audience:row.audience,benefits:row.benefits,monthlyAmountCents:row.monthly_amount_cents,quarterlyAmountCents:row.quarterly_amount_cents,semiannualAmountCents:row.semiannual_amount_cents,annualAmountCents:row.annual_amount_cents,active:row.active,displayOrder:row.display_order});
 const select="SELECT id,title,subtitle,description,audience,benefits,monthly_amount_cents,quarterly_amount_cents,semiannual_amount_cents,annual_amount_cents,active,display_order FROM landing_plans";
@@ -16,3 +18,6 @@ const values=(input:z.infer<typeof landingPlanInput>)=>[input.id,input.title,inp
 const returning=" RETURNING id,title,subtitle,description,audience,benefits,monthly_amount_cents,quarterly_amount_cents,semiannual_amount_cents,annual_amount_cents,active,display_order";
 export async function createLandingPlan(input:z.infer<typeof landingPlanCreateInput>){validatePlan(input);try{const result=await query<Row>(`INSERT INTO landing_plans (id,title,subtitle,description,audience,benefits,monthly_amount_cents,quarterly_amount_cents,semiannual_amount_cents,annual_amount_cents,active,display_order) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)${returning}`,values(input));return publicPlan(result.rows[0]);}catch(error){if((error as {code?:string}).code==="23505")throw new ApiError(409,"Ya existe una tarjeta con ese título.");throw error;}}
 export async function updateLandingPlan(input:z.infer<typeof landingPlanUpdateInput>){validatePlan(input);const result=await query<Row>(`UPDATE landing_plans SET title=$2,subtitle=$3,description=$4,audience=$5,benefits=$6,monthly_amount_cents=$7,quarterly_amount_cents=$8,semiannual_amount_cents=$9,annual_amount_cents=$10,active=$11,display_order=$12 WHERE id=$1${returning}`,values(input));if(!result.rows[0])throw new ApiError(404,"No encontramos ese plan de landing.");return publicPlan(result.rows[0]);}
+export async function deleteLandingPlan(id:string){const result=await query<{id:string}>("DELETE FROM landing_plans WHERE id=$1 RETURNING id",[id]);if(!result.rows[0])throw new ApiError(404,"No encontramos esa tarjeta de landing.");return {id:result.rows[0].id};}
+
+export async function reorderLandingPlans(ids:string[]){return transaction(async client=>{for(const [index,planId] of ids.entries())await client.query("UPDATE landing_plans SET display_order=$1 WHERE id=$2",[index+1,planId]);return {ids};});}
