@@ -8,6 +8,7 @@ const phone = z.string().regex(/^\+[1-9]\d{7,14}$/, "Número de WhatsApp inváli
 export const issueLoginCodeInput = z.object({ phoneE164: phone });
 export const verifyLoginCodeInput = z.object({ challengeId: z.string().uuid(), code: z.string().regex(/^\d{4}$/) });
 export const completeLoginInput = z.object({ challengeId: z.string().uuid(), verificationToken: z.string().min(32).max(200), pin: z.string().regex(/^\d{4}$/) });
+export const changePinInput = z.object({ currentPin: z.string().regex(/^\d{4}$/), pin: z.string().regex(/^\d{4}$/), pinConfirmation: z.string().regex(/^\d{4}$/) }).refine((value) => value.pin === value.pinConfirmation, { path: ["pinConfirmation"], message: "Los PIN no coinciden." });
 export const adminPasswordLoginInput = z.object({ username: z.string().trim().min(3).max(254), password: z.string().min(12).max(128) });
 
 type UserRow = { id: string; full_name: string; username: string | null; phone_e164: string; password_hash: string | null; pin_hash: string; platform_role: string; account_status: string; is_online: boolean };
@@ -119,6 +120,24 @@ export async function getAccessSession(token: string) {
   const user = result.rows[0];
   if (!user || user.account_status !== "active" || !user.is_online) throw new ApiError(401, "Tu sesión ya no está disponible.");
   return { account: accountSummary(user) };
+}
+
+export async function changePin(token: string, input: z.infer<typeof changePinInput>) {
+  return transaction(async (client) => {
+    const result = await client.query<UserRow>(
+      `SELECT u.id, u.full_name, u.username, u.phone_e164, u.password_hash, u.pin_hash, u.platform_role, u.account_status, u.is_online
+         FROM application_sessions s JOIN users u ON u.id = s.user_id
+        WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.deleted_at IS NULL
+        FOR UPDATE OF s, u`,
+      [hashOpaqueToken(token)],
+    );
+    const user = result.rows[0];
+    if (!user || user.account_status !== "active" || !user.is_online) throw new ApiError(401, "Tu sesión ya no está disponible.");
+    if (!(await verifySecret(input.currentPin, user.pin_hash))) throw new ApiError(401, "El PIN actual no coincide.");
+    await client.query("UPDATE users SET pin_hash = $2 WHERE id = $1", [user.id, await hashSecret(input.pin)]);
+    await client.query("UPDATE application_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [user.id]);
+    return { message: "PIN actualizado. Inicia sesión nuevamente." };
+  });
 }
 
 export async function requireMasterAdministrator(token: string) {

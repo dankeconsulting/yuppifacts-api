@@ -15,7 +15,8 @@ export const createAccountInput = z.object({
   fullName: z.string().trim().min(3).max(160),
   email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
   pin: z.string().regex(/^\d{4}$/),
-});
+  pinConfirmation: z.string().regex(/^\d{4}$/),
+}).refine((value) => value.pin === value.pinConfirmation, { path: ["pinConfirmation"], message: "Los PIN no coinciden." });
 
 type PlanRow = {
   id: string;

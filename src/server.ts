@@ -14,16 +14,17 @@ import { campaignCreateInput, campaignPlans, campaignPlansInput, campaignUpdateI
 import { bootstrapInput, bootstrapStatus, claimMasterAdministrator } from "./bootstrap.js";
 import { activateConfiguration, activateInput, createCheckout, createPromotionCheckout, credentialsInput, listConfigurations, saveCredentials, testConnection, testConnectionInput } from "./mercado-pago.js";
 import { getLandingModal, saveLandingModal } from "./landingModalConfig.js";
-import { adminPasswordLoginInput, completeLogin, completeLoginInput, getAccessSession, issueLoginCode, issueLoginCodeInput, loginAdministrator, requireMasterAdministrator, verifyLoginCode, verifyLoginCodeInput } from "./access.js";
+import { adminPasswordLoginInput, changePin, changePinInput, completeLogin, completeLoginInput, getAccessSession, issueLoginCode, issueLoginCodeInput, loginAdministrator, requireMasterAdministrator, verifyLoginCode, verifyLoginCodeInput } from "./access.js";
 import { hashIp } from "./security.js";
 import { retryFailedPromotionEmails } from "./promotionNotifications.js";
+import { deleteAdminSubscriber, getAdminSubscriber, listAdminSubscribers, moveSubscriberToReview, onlineInput, setSubscriberOnline, subscriberIdInput, subscriberStageInput } from "./adminSubscribers.js";
 
 const origins = [...new Set([...(process.env.WEB_ORIGIN ?? "").split(",").map((value) => value.trim()).filter(Boolean), "https://tickets.yuppifacts.com", "https://promo.yuppifacts.com", "https://admin.yuppifacts.com"])];
 if (process.env.APP_ENV === "production" && origins.length === 0) throw new Error("WEB_ORIGIN is required in production");
 const app = express();
 app.disable("x-powered-by"); app.set("trust proxy", 1);
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-app.use(cors({ origin(origin, callback) { if (!origin || origins.includes(origin)) return callback(null, true); return callback(new ApiError(403, "Origen no autorizado.")); }, credentials: false, methods: ["GET", "POST", "PUT", "PATCH"], allowedHeaders: ["content-type", "x-contracting-token", "x-promotion-token", "x-admin-pin", "x-application-token"] }));
+app.use(cors({ origin(origin, callback) { if (!origin || origins.includes(origin)) return callback(null, true); return callback(new ApiError(403, "Origen no autorizado.")); }, credentials: false, methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], allowedHeaders: ["content-type", "x-contracting-token", "x-promotion-token", "x-admin-pin", "x-application-token"] }));
 app.use(express.json({ limit: "1mb" }));
 const contractingLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 40, standardHeaders: "draft-8", legacyHeaders: false });
 const otpLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false });
@@ -40,6 +41,7 @@ app.get("/v1/plans", async (_request, response, next) => { try { response.json({
 app.post("/v1/access/code", loginLimiter, async (request, response, next) => { try { response.status(201).json(await issueLoginCode(issueLoginCodeInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/access/code/verify", loginLimiter, async (request, response, next) => { try { response.json(await verifyLoginCode(verifyLoginCodeInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/access/pin", loginLimiter, async (request, response, next) => { try { response.json(await completeLogin(completeLoginInput.parse(request.body), { ipHash: hashIp(request.ip), userAgent: request.get("user-agent") })); } catch (error) { next(error); } });
+app.post("/v1/access/pin/change", loginLimiter, async (request, response, next) => { try { response.json(await changePin(applicationToken(request), changePinInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/access/admin-login", loginLimiter, async (request, response, next) => { try { response.json(await loginAdministrator(adminPasswordLoginInput.parse(request.body), { ipHash: hashIp(request.ip), userAgent: request.get("user-agent") })); } catch (error) { next(error); } });
 app.get("/v1/access/session", loginLimiter, async (request, response, next) => { try { response.json(await getAccessSession(applicationToken(request))); } catch (error) { next(error); } });
 app.post("/v1/contracting/sessions", contractingLimiter, async (request, response, next) => { try { response.status(201).json(await createContractingSession(createSessionInput.parse(request.body))); } catch (error) { next(error); } });
@@ -76,6 +78,11 @@ const uploadInput = z.object({ taxpayerId: z.string().uuid(), filename: z.string
 app.post("/v1/documents/upload-url", async (request, response, next) => { try { response.status(201).json(await createUploadUrl(uploadInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/promotion-vouchers", voucherLimiter, async (request, response, next) => { try { response.status(201).json(await createPromotionVoucher(createPromotionVoucherInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/promotion-vouchers/:id/submit", voucherLimiter, async (request, response, next) => { try { response.json(await submitPromotionVoucher(submitPromotionVoucherInput.parse({ id: request.params.id }))); } catch (error) { next(error); } });
+app.get("/v1/admin/subscribers", otpLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); response.json(await listAdminSubscribers(subscriberStageInput.parse({ stage: request.query.stage }).stage)); } catch (error) { next(error); } });
+app.get("/v1/admin/subscribers/:id", otpLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); response.json(await getAdminSubscriber(subscriberIdInput.parse({ id: request.params.id }).id)); } catch (error) { next(error); } });
+app.post("/v1/admin/subscribers/:id/validate", otpLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); response.json(await moveSubscriberToReview(subscriberIdInput.parse({ id: request.params.id }).id)); } catch (error) { next(error); } });
+app.patch("/v1/admin/subscribers/:id/online", otpLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); const input=onlineInput.parse({ id: request.params.id, online: request.body?.online }); response.json(await setSubscriberOnline(input.id,input.online)); } catch (error) { next(error); } });
+app.delete("/v1/admin/subscribers/:id", otpLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); await deleteAdminSubscriber(subscriberIdInput.parse({ id: request.params.id }).id); response.status(204).end(); } catch (error) { next(error); } });
 app.get("/v1/admin/promotion-vouchers", otpLimiter, async (request, response, next) => { try { response.json(await listPromotionVoucherReviews(promotionVoucherReviewsInput.parse({ pin: request.get("x-admin-pin") }))); } catch (error) { next(error); } });
 app.post("/v1/admin/promotion-vouchers/:id/review", otpLimiter, async (request, response, next) => { try { response.json(await reviewPromotionVoucher(reviewPromotionVoucherInput.parse({ pin: request.get("x-admin-pin"), voucherId: request.params.id, approved: request.body?.approved }))); } catch (error) { next(error); } });
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => { if (error instanceof ApiError) return response.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) }); if (error instanceof ZodError) return response.status(400).json({ error: "Datos inválidos", details: error.flatten() }); console.error(error); return response.status(500).json({ error: "Error interno" }); });
