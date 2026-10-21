@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { query } from "./db.js";
+import { query, transaction } from "./db.js";
 import { ApiError } from "./contracting.js";
 import { createPromotionVoucherUploadUrl, verifyPromotionVoucherUpload } from "./storage.js";
 import { deliverPromotionEmail, queuePromotionEmail } from "./promotionNotifications.js";
@@ -54,22 +54,42 @@ export async function createPromotionVoucher(input: z.infer<typeof createPromoti
       FROM promotion_vouchers voucher
       JOIN promotion_contracts prior_contract ON prior_contract.id = voucher.promotion_contract_id
       JOIN promotion_contracts current_contract ON current_contract.id = $1
-      WHERE voucher.email = $2
-        AND voucher.phone_e164 = $3
+      WHERE voucher.phone_e164 = $2
         AND prior_contract.plan_id = current_contract.plan_id
         AND prior_contract.quoted_amount_cents = current_contract.quoted_amount_cents
         AND voucher.status IN ('submitted','verified')
-      LIMIT 1`, [contract.id, input.email, input.phoneE164]);
+      LIMIT 1`, [contract.id, input.phoneE164]);
     if (prior.rows[0]) throw new ApiError(409, "Ya nos enviaste tu voucher. Aún estamos procesando tu suscripción; cuando validemos el pago procederemos a activar tu cuenta.");
   }
   const voucherId = crypto.randomUUID();
   const upload = await createPromotionVoucherUploadUrl({ voucherId, filename: input.filename, contentType: input.contentType });
-  await query(
-    `INSERT INTO promotion_vouchers (id, promotion_contract_id, full_name, email, phone_e164, country_code, state_name, city_name, amount_cents, currency, storage_key, original_filename, content_type, byte_size, sha256)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'MXN', $10, $11, $12, $13, $14)`,
-    [voucherId, contract?.id ?? null, input.fullName, input.email, input.phoneE164, input.countryCode, input.stateName, input.cityName, contract?.quoted_amount_cents ?? 390000, upload.key, input.filename, input.contentType, input.byteSize, input.sha256],
-  );
-  if(contract)await query(`UPDATE promotion_contracts SET full_name=$2,email=$3,phone_e164=$4,country_code=$5,state_name=$6,city_name=$7,pin_hash=$8 WHERE id=$1`,[contract.id,input.fullName,input.email,input.phoneE164,input.countryCode,input.stateName,input.cityName,await hashSecret(input.pin)]);
+  await transaction(async client => {
+    if (contract) {
+      const existing = await client.query<{ id:string; platform_role:string }>(
+        "SELECT id,platform_role FROM users WHERE phone_e164=$1 AND deleted_at IS NULL LIMIT 1 FOR UPDATE",
+        [input.phoneE164],
+      );
+      const known = existing.rows[0];
+      if (!known || known.platform_role === "master_admin") throw new ApiError(404, "No encontramos una cuenta de YuppiFacts con este WhatsApp. Suscríbete para continuar.", "SUBSCRIPTION_NOT_FOUND");
+      const linked = await client.query<{ user_id:string|null }>("SELECT user_id FROM promotion_contracts WHERE id=$1 FOR UPDATE", [contract.id]);
+      if (linked.rows[0]?.user_id !== known.id) throw new ApiError(409, "Este WhatsApp no corresponde a la contratación seleccionada.");
+      const pinHash = await hashSecret(input.pin);
+      const userId = known.id;
+      await client.query(
+        "UPDATE users SET email=$2,full_name=$3,pin_hash=$4,account_status='pending_review',is_online=false,acquisition_source='promotion',promotion_price_locked=true WHERE id=$1",
+        [userId,input.email,input.fullName,pinHash],
+      );
+      await client.query(
+        "UPDATE promotion_contracts SET user_id=$2,full_name=$3,email=$4,phone_e164=$5,country_code=$6,state_name=$7,city_name=$8,pin_hash=$9,lifecycle_status=CASE WHEN lifecycle_status='checkout_started' THEN 'pending_payment' ELSE lifecycle_status END WHERE id=$1",
+        [contract.id,userId,input.fullName,input.email,input.phoneE164,input.countryCode,input.stateName,input.cityName,pinHash],
+      );
+    }
+    await client.query(
+      `INSERT INTO promotion_vouchers (id, promotion_contract_id, full_name, email, phone_e164, country_code, state_name, city_name, amount_cents, currency, storage_key, original_filename, content_type, byte_size, sha256)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'MXN', $10, $11, $12, $13, $14)`,
+      [voucherId, contract?.id ?? null, input.fullName, input.email, input.phoneE164, input.countryCode, input.stateName, input.cityName, contract?.quoted_amount_cents ?? 390000, upload.key, input.filename, input.contentType, input.byteSize, input.sha256],
+    );
+  });
   return { voucherId, uploadUrl: upload.uploadUrl, expiresIn: upload.expiresIn };
 }
 
@@ -83,25 +103,37 @@ export async function submitPromotionVoucher(input: z.infer<typeof submitPromoti
   if (!voucher) throw new ApiError(409, "Este comprobante ya fue enviado o ya no está disponible.");
   const uploadIsValid = await verifyPromotionVoucherUpload({ key: voucher.storage_key, contentType: voucher.content_type, byteSize: voucher.byte_size });
   if (!uploadIsValid) throw new ApiError(400, "No encontramos un comprobante válido. Vuelve a cargarlo e inténtalo de nuevo.");
-  const result = await query<VoucherRow>(
-    `UPDATE promotion_vouchers SET status = 'submitted', submitted_at = now()
-      WHERE id = $1 AND status = 'upload_pending'
-      RETURNING id, storage_key, status`,
-    [input.id],
-  );
-  if (!result.rows[0]) throw new ApiError(409, "Este comprobante ya fue enviado o ya no está disponible.");
-  if (voucher.promotion_contract_id) {
-    const subscriber = await query<{ full_name:string; email:string; phone_e164:string; pin_hash:string|null }>("SELECT full_name,email,phone_e164,pin_hash FROM promotion_contracts WHERE id=$1", [voucher.promotion_contract_id]);
-    const account = subscriber.rows[0];
-    if (!account?.pin_hash) throw new ApiError(409, "Completa y confirma tu PIN para enviar el comprobante.");
-    const existing = await query<{ id:string }>("SELECT id FROM users WHERE email=$1 OR phone_e164=$2 LIMIT 1", [account.email, account.phone_e164]);
-    const userId = existing.rows[0]?.id ?? (await query<{ id:string }>("INSERT INTO users(email,full_name,phone_e164,pin_hash,account_status,is_online) VALUES($1,$2,$3,$4,'pending_review',false) RETURNING id", [account.email, account.full_name, account.phone_e164, account.pin_hash])).rows[0].id;
-    await query("UPDATE promotion_contracts SET user_id=$2 WHERE id=$1", [voucher.promotion_contract_id, userId]);
-  }
+  const result = await transaction(async client => {
+    const submitted = await client.query<{ id:string }>(
+      `UPDATE promotion_vouchers SET status = 'submitted', submitted_at = now()
+        WHERE id = $1 AND status = 'upload_pending'
+        RETURNING id`,
+      [input.id],
+    );
+    if (!submitted.rows[0]) throw new ApiError(409, "Este comprobante ya fue enviado o ya no está disponible.");
+    if (voucher.promotion_contract_id) {
+      const subscriber = await client.query<{ full_name:string; email:string; phone_e164:string; pin_hash:string|null }>(
+        "SELECT full_name,email,phone_e164,pin_hash FROM promotion_contracts WHERE id=$1 FOR UPDATE",
+        [voucher.promotion_contract_id],
+      );
+      const account = subscriber.rows[0];
+      if (!account?.pin_hash) throw new ApiError(409, "Completa y confirma tu PIN de cuatro dígitos para enviar el comprobante.");
+      const existing = await client.query<{ id:string; platform_role:string }>(
+        "SELECT id,platform_role FROM users WHERE phone_e164=$1 LIMIT 1 FOR UPDATE",
+        [account.phone_e164],
+      );
+      if (!existing.rows[0] || existing.rows[0].platform_role === "master_admin") throw new ApiError(409, "No encontramos una cuenta temporal válida para este comprobante.");
+      const userId = existing.rows[0].id;
+      await client.query(
+        "UPDATE promotion_contracts SET user_id=$2,lifecycle_status='voucher_submitted' WHERE id=$1 AND lifecycle_status IN ('draft','pending_payment','checkout_started')",
+        [voucher.promotion_contract_id, userId],
+      );
+    }
+    return submitted.rows[0];
+  });
   const emailId = await queuePromotionEmail({ voucherId:voucher.id, recipient:voucher.email, template:"voucher_received", payload:{fullName:voucher.full_name} });
   void deliverPromotionEmail(emailId);
-  await query(`UPDATE promotion_contracts SET lifecycle_status='voucher_submitted' WHERE id=(SELECT promotion_contract_id FROM promotion_vouchers WHERE id=$1) AND lifecycle_status IN ('draft','pending_payment')`,[voucher.id]);
-  return { voucherId: result.rows[0].id, status: "submitted" as const };
+  return { voucherId: result.id, status: "submitted" as const };
 }
 
 export async function listPromotionVoucherReviews(input:z.infer<typeof promotionVoucherReviewsInput>){await requireMasterPin(input.pin);const result=await query<ReviewRow>(`SELECT voucher.id,voucher.full_name,voucher.email,voucher.phone_e164,voucher.original_filename,voucher.status,voucher.submitted_at,voucher.promotion_contract_id,contract.folio,contract.plan_id,contract.billing_period,contract.quoted_amount_cents FROM promotion_vouchers voucher LEFT JOIN promotion_contracts contract ON contract.id=voucher.promotion_contract_id WHERE voucher.status IN ('submitted','verified','rejected') ORDER BY voucher.submitted_at DESC NULLS LAST LIMIT 200`);return {vouchers:result.rows.map(voucher=>({id:voucher.id,fullName:voucher.full_name,email:voucher.email,phone:voucher.phone_e164,filename:voucher.original_filename,status:voucher.status,submittedAt:voucher.submitted_at?.toISOString()??null,promotionId:voucher.promotion_contract_id,folio:voucher.folio,planId:voucher.plan_id,billingPeriod:voucher.billing_period,quotedAmountCents:voucher.quoted_amount_cents}))};}

@@ -1,21 +1,22 @@
 import { z } from "zod";
 import { ApiError } from "./contracting.js";
 import { query, transaction } from "./db.js";
+import { deletePromotionVoucherObjects } from "./storage.js";
 
 export const subscriberStageInput = z.object({ stage: z.enum(["new", "review", "active"]) });
 export const subscriberIdInput = z.object({ id: z.string().uuid() });
 export const onlineInput = subscriberIdInput.extend({ online: z.boolean() });
 
-type SubscriberRow = { id:string; full_name:string; email:string; phone_e164:string; country_code:string|null; state_name:string|null; city_name:string|null; plan_id:string; billing_period:string; quoted_amount_cents:number; lifecycle_status:string; subscription_tag:string; created_at:Date; renewal_at:Date|null; voucher_id:string|null; voucher_filename:string|null; voucher_key:string|null; mode:string|null; user_id:string|null; account_status:string|null; is_online:boolean|null };
+type SubscriberRow = { id:string; full_name:string; email:string; phone_e164:string; country_code:string|null; state_name:string|null; city_name:string|null; plan_id:string; billing_period:string; quoted_amount_cents:number; lifecycle_status:string; subscription_tag:string; created_at:Date; renewal_at:Date|null; voucher_id:string|null; voucher_filename:string|null; voucher_key:string|null; mode:string|null; user_id:string|null; user_number:number|null; platform_role:string|null; account_status:string|null; is_online:boolean|null };
 
 function profileLabel(mode:string|null, planId:string) {
   const key = mode ?? planId;
   return ({ individual:"Persona física", independent_accountant:"Contador independiente", accounting_firm:"Despacho contable", company:"Empresa", corporate:"Corporativo" } as Record<string,string>)[key] ?? key;
 }
 function serialize(row:SubscriberRow) {
-  return { id:row.id, userId:row.user_id, fullName:row.full_name, email:row.email, phone:row.phone_e164, countryCode:row.country_code ?? "MX", state:row.state_name, city:row.city_name, profile:profileLabel(row.mode,row.plan_id), planId:row.plan_id, billingPeriod:row.billing_period, quotedAmountCents:row.quoted_amount_cents, subscriptionTag:row.subscription_tag, registeredAt:row.created_at.toISOString(), renewalAt:row.renewal_at?.toISOString() ?? null, voucher:{ id:row.voucher_id, filename:row.voucher_filename, storageKey:row.voucher_key }, accountStatus:row.account_status, online:Boolean(row.is_online) };
+  return { id:row.id, userId:row.user_id, userNumber:row.user_number, role:row.platform_role === "master_admin" ? "Administrador maestro" : "Suscriptor", fullName:row.full_name, email:row.email, phone:row.phone_e164, countryCode:row.country_code ?? "MX", state:row.state_name, city:row.city_name, profile:profileLabel(row.mode,row.plan_id), planId:row.plan_id, billingPeriod:row.billing_period, quotedAmountCents:row.quoted_amount_cents, subscriptionTag:row.subscription_tag, registeredAt:row.created_at.toISOString(), renewalAt:row.renewal_at?.toISOString() ?? null, voucher:{ id:row.voucher_id, filename:row.voucher_filename, storageKey:row.voucher_key }, accountStatus:row.account_status, online:Boolean(row.is_online) };
 }
-const base = `SELECT contract.id,contract.full_name,contract.email,contract.phone_e164,contract.country_code,contract.state_name,contract.city_name,contract.plan_id,contract.billing_period,contract.quoted_amount_cents,contract.lifecycle_status,contract.subscription_tag,contract.created_at,contract.renewal_at,contract.user_id,user_record.account_status,user_record.is_online,contract.plan_snapshot->>'mode' AS mode,voucher.id AS voucher_id,voucher.original_filename AS voucher_filename,voucher.storage_key AS voucher_key FROM promotion_contracts contract LEFT JOIN users user_record ON user_record.id=contract.user_id LEFT JOIN LATERAL (SELECT id,original_filename,storage_key FROM promotion_vouchers WHERE promotion_contract_id=contract.id ORDER BY submitted_at DESC NULLS LAST LIMIT 1) voucher ON true`;
+const base = `SELECT contract.id,contract.full_name,contract.email,contract.phone_e164,contract.country_code,contract.state_name,contract.city_name,contract.plan_id,contract.billing_period,contract.quoted_amount_cents,contract.lifecycle_status,contract.subscription_tag,contract.created_at,contract.renewal_at,contract.user_id,user_record.user_number,user_record.platform_role,user_record.account_status,user_record.is_online,contract.plan_snapshot->>'mode' AS mode,voucher.id AS voucher_id,voucher.original_filename AS voucher_filename,voucher.storage_key AS voucher_key FROM promotion_contracts contract LEFT JOIN users user_record ON user_record.id=contract.user_id LEFT JOIN LATERAL (SELECT id,original_filename,storage_key FROM promotion_vouchers WHERE promotion_contract_id=contract.id ORDER BY submitted_at DESC NULLS LAST LIMIT 1) voucher ON true`;
 
 export async function listAdminSubscribers(stage:z.infer<typeof subscriberStageInput>["stage"]) {
   const where = stage === "new" ? "contract.lifecycle_status='voucher_submitted'" : stage === "review" ? "contract.lifecycle_status='payment_verified' AND COALESCE(user_record.is_online,false)=false" : "user_record.account_status='active' AND user_record.is_online=true";
@@ -46,6 +47,14 @@ export async function setSubscriberOnline(id:string,online:boolean) {
   });
 }
 export async function deleteAdminSubscriber(id:string) {
+  const records = await query<{user_id:string|null; storage_key:string|null}>(
+    `SELECT contract.user_id, voucher.storage_key
+       FROM promotion_contracts contract
+       LEFT JOIN promotion_vouchers voucher ON voucher.promotion_contract_id=contract.id
+      WHERE contract.id=$1`, [id],
+  );
+  if (!records.rows[0]) throw new ApiError(404,"No encontramos este suscriptor.");
+  await deletePromotionVoucherObjects(records.rows.flatMap(record => record.storage_key ? [record.storage_key] : []));
   return transaction(async client => {
     const record=await client.query<{user_id:string|null}>("SELECT user_id FROM promotion_contracts WHERE id=$1 FOR UPDATE",[id]);
     if(!record.rows[0]) throw new ApiError(404,"No encontramos este suscriptor.");
@@ -53,5 +62,22 @@ export async function deleteAdminSubscriber(id:string) {
     await client.query("DELETE FROM promotion_contracts WHERE id=$1",[id]);
     if(record.rows[0].user_id) await client.query("DELETE FROM users WHERE id=$1",[record.rows[0].user_id]);
     return { deleted:true };
+  });
+}
+
+export async function deleteUnlinkedPromotionTestData() {
+  const records = await query<{id:string; storage_key:string|null}>(
+    `SELECT contract.id, voucher.storage_key
+       FROM promotion_contracts contract
+       LEFT JOIN promotion_vouchers voucher ON voucher.promotion_contract_id=contract.id
+      WHERE contract.user_id IS NULL`,
+  );
+  const ids = [...new Set(records.rows.map(record => record.id))];
+  await deletePromotionVoucherObjects(records.rows.flatMap(record => record.storage_key ? [record.storage_key] : []));
+  return transaction(async client => {
+    if (ids.length) {
+      await client.query("DELETE FROM promotion_contracts WHERE id = ANY($1::uuid[])", [ids]);
+    }
+    return { deletedContracts: ids.length, deletedVouchers: records.rows.filter(record => record.storage_key).length };
   });
 }

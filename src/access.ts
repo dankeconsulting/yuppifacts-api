@@ -145,3 +145,16 @@ export async function requireMasterAdministrator(token: string) {
   if (session.account.role !== "master_admin") throw new ApiError(403, "Esta acción requiere una sesión de administrador maestro.");
   return session.account;
 }
+
+export async function confirmMasterPin(token: string, pin: string) {
+  const result = await query<UserRow>(
+    `SELECT u.id, u.full_name, u.username, u.phone_e164, u.password_hash, u.pin_hash, u.platform_role, u.account_status, u.is_online
+       FROM application_sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.deleted_at IS NULL
+      LIMIT 1`,
+    [hashOpaqueToken(token)],
+  );
+  const user = result.rows[0];
+  if (!user || user.platform_role !== "master_admin" || !(await verifySecret(pin, user.pin_hash))) throw new ApiError(401, "PIN administrativo no válido.");
+  return user.id;
+}
