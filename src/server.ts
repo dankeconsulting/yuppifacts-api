@@ -18,6 +18,7 @@ import { adminPasswordLoginInput, changePin, changePinInput, completeLogin, comp
 import { hashIp } from "./security.js";
 import { deliverDuePromotionPaymentReminders, retryFailedPromotionEmails } from "./promotionNotifications.js";
 import { deleteAdminSubscribers, deleteSubscribersInput, deleteUnlinkedPromotionTestData, getAdminSubscriber, listAdminSubscribers, moveSubscriberToReview, onlineInput, setSubscriberOnline, subscriberIdInput, subscriberStageInput } from "./adminSubscribers.js";
+import { landingPlanUpdateInput, listLandingPlans, updateLandingPlan } from "./landingPlans.js";
 
 const origins = [...new Set([...(process.env.WEB_ORIGIN ?? "").split(",").map((value) => value.trim()).filter(Boolean), "https://tickets.yuppifacts.com", "https://promo.yuppifacts.com", "https://admin.yuppifacts.com"])];
 if (process.env.APP_ENV === "production" && origins.length === 0) throw new Error("WEB_ORIGIN is required in production");
@@ -59,6 +60,7 @@ app.post("/v1/admin/payment-providers/mercado-pago/activate", otpLimiter, async 
 app.get("/v1/public/landing-modal", async (_request, response, next) => { try { response.json(await getLandingModal()); } catch (error) { next(error); } });
 app.get("/v1/public/promotion", async (_request, response, next) => { try { response.json(await getPromotionConfig()); } catch (error) { next(error); } });
 app.get("/v1/public/promotion/plans", async (_request, response, next) => { try { response.json({ plans: await listPublicPromotionPlans() }); } catch (error) { next(error); } });
+app.get("/v1/public/landing/plans", async (_request, response, next) => { try { response.json({ plans: await listLandingPlans(true) }); } catch (error) { next(error); } });
 app.post("/v1/promotions/contracts", contractingLimiter, async (request, response, next) => { try { response.status(201).json(await createPromotionContract(createPromotionContractInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/promotions/contracts/:id/mercado-pago", contractingLimiter, async (request, response, next) => { try { response.json(await createPromotionCheckout(String(request.params.id), String(request.get("x-promotion-token") ?? ""))); } catch (error) { next(error); } });
 app.get("/v1/promotions/contracts/:id/resume", contractingLimiter, async (request, response, next) => { try { response.json(await getPromotionResume(promotionAccessInput.parse({promotionId:request.params.id,promotionToken:request.get("x-promotion-token")}))); } catch (error) { next(error); } });
@@ -75,6 +77,8 @@ app.put("/v1/admin/promotions/:id/plans", otpLimiter, async (request, response, 
 app.get("/v1/admin/promotion/plans", otpLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); response.json({ plans: await listPromotionPlans() }); } catch (error) { next(error); } });
 app.post("/v1/admin/promotion/plans", otpLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); response.status(201).json({ plan: await createPromotionPlan(promotionPlanCreateInput.parse(request.body)) }); } catch (error) { next(error); } });
 app.put("/v1/admin/promotion/plans/:id", otpLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); response.json({ plan: await updatePromotionPlan(promotionPlanUpdateInput.parse({ ...request.body, id: request.params.id })) }); } catch (error) { next(error); } });
+app.get("/v1/admin/landing/plans", otpLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); response.json({ plans: await listLandingPlans() }); } catch (error) { next(error); } });
+app.put("/v1/admin/landing/plans/:id", otpLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); response.json({ plan: await updateLandingPlan(landingPlanUpdateInput.parse({ ...request.body, id: request.params.id })) }); } catch (error) { next(error); } });
 app.get("/v1/admin/landing-modal", otpLimiter, async (request, response, next) => { try { response.json(await getLandingModal(String(request.get("x-admin-pin") ?? ""))); } catch (error) { next(error); } });
 app.put("/v1/admin/landing-modal", otpLimiter, async (request, response, next) => { try { await saveLandingModal(landingModalInput.parse(request.body)); response.status(204).end(); } catch (error) { next(error); } });
 const uploadInput = z.object({ taxpayerId: z.string().uuid(), filename: z.string().min(1).max(180), contentType: z.enum(["application/pdf", "image/jpeg", "image/png"]) });
