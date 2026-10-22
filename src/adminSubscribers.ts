@@ -107,3 +107,12 @@ export async function deleteUnlinkedPromotionTestData() {
     return { deletedContracts: ids.length, deletedVouchers: records.rows.filter(record => record.storage_key).length };
   });
 }
+
+export async function listRecentAdminSubscribers() {
+  const newest=await query<{created_at:Date|null}>("SELECT max(created_at) AS created_at FROM promotion_contracts WHERE lifecycle_status='voucher_submitted' OR user_id IS NULL");
+  const anchor=newest.rows[0]?.created_at;
+  if(!anchor)return { subscribers:[] };
+  const where="(contract.lifecycle_status='voucher_submitted' OR contract.user_id IS NULL) AND contract.created_at >= $1 - interval '1 hour' AND contract.created_at <= $1";
+  const result=await query<SubscriberRow>(`${base} WHERE ${where} ORDER BY contract.created_at DESC`,[anchor]);
+  return { subscribers:result.rows.map(serialize), referenceAt:anchor.toISOString() };
+}
