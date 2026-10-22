@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ApiError } from "./contracting.js";
 import { query, transaction } from "./db.js";
-import { deletePromotionVoucherObjects } from "./storage.js";
+import { deletePromotionVoucherObjects, PromotionVoucherDeletionError } from "./storage.js";
 
 export const subscriberStageInput = z.object({ stage: z.enum(["new", "review", "active"]) });
 export const subscriberIdInput = z.object({ id: z.string().uuid() });
@@ -78,7 +78,14 @@ export async function deleteAdminSubscribers(ids:string[], confirmationIds?:numb
       WHERE contract.id = ANY($1::uuid[])`, [ids],
   );
   if (new Set(records.rows.map(record => record.contract_id)).size !== ids.length) throw new ApiError(404,"No encontramos uno o más registros.");
-  await deletePromotionVoucherObjects([...new Set(records.rows.flatMap(record => record.storage_key ? [record.storage_key] : []))]);
+  try {
+    await deletePromotionVoucherObjects([...new Set(records.rows.flatMap(record => record.storage_key ? [record.storage_key] : []))]);
+  } catch (error) {
+    if (error instanceof PromotionVoucherDeletionError) {
+      throw new ApiError(502,"No se eliminó ningún registro: el almacenamiento de comprobantes rechazó la operación. Revisa los permisos de eliminación de vouchers.","VOUCHER_STORAGE_DELETE_FAILED");
+    }
+    throw error;
+  }
   return transaction(async client => {
     const contracts=await client.query<{id:string;user_id:string|null;platform_role:string|null}>("SELECT contract.id,contract.user_id,user_record.platform_role FROM promotion_contracts contract LEFT JOIN users user_record ON user_record.id=contract.user_id WHERE contract.id = ANY($1::uuid[]) FOR UPDATE OF contract",[ids]);
     if(contracts.rows.length !== ids.length) throw new ApiError(404,"No encontramos uno o más registros.");

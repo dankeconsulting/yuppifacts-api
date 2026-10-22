@@ -1,5 +1,8 @@
 import { DeleteObjectsCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3"; import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 const bucket=process.env.AWS_S3_BUCKET; const client=new S3Client({region:process.env.AWS_REGION});
+export class PromotionVoucherDeletionError extends Error {
+  constructor(public readonly codes:string[]) { super("No fue posible eliminar todos los comprobantes almacenados."); }
+}
 export async function createUploadUrl(input:{taxpayerId:string;filename:string;contentType:"application/pdf"|"image/jpeg"|"image/png"}){if(!bucket)throw new Error("AWS_S3_BUCKET is required");const safeName=input.filename.replace(/[^a-zA-Z0-9._-]/g,"_");const key=`taxpayers/${input.taxpayerId}/documents/${crypto.randomUUID()}-${safeName}`;const command=new PutObjectCommand({Bucket:bucket,Key:key,ContentType:input.contentType,ServerSideEncryption:"aws:kms",SSEKMSKeyId:process.env.AWS_KMS_KEY_ID||undefined,Metadata:{taxpayerId:input.taxpayerId}});return{key,uploadUrl:await getSignedUrl(client,command,{expiresIn:300}),expiresIn:300}}
 
 export async function createPromotionVoucherUploadUrl(input:{voucherId:string;filename:string;contentType:"application/pdf"|"image/jpeg"|"image/png"}) {
@@ -29,6 +32,10 @@ export async function deletePromotionVoucherObjects(keys: string[]) {
       Bucket: bucket,
       Delete: { Objects: keys.slice(offset, offset + 1000).map(Key => ({ Key })), Quiet: true },
     }));
-    if (response.Errors?.length) throw new Error("No fue posible eliminar todos los comprobantes almacenados.");
+    if (response.Errors?.length) {
+      const codes=response.Errors.map(error=>error.Code ?? "UnknownError");
+      console.error("Promotion voucher deletion rejected by object storage", { codes });
+      throw new PromotionVoucherDeletionError(codes);
+    }
   }
 }
