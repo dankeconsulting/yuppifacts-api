@@ -109,10 +109,17 @@ export async function deleteUnlinkedPromotionTestData() {
 }
 
 export async function listRecentAdminSubscribers() {
-  const newest=await query<{created_at:Date|null}>("SELECT max(created_at) AS created_at FROM promotion_contracts WHERE lifecycle_status='voucher_submitted' OR user_id IS NULL");
-  const anchor=newest.rows[0]?.created_at;
-  if(!anchor)return { subscribers:[] };
-  const where="(contract.lifecycle_status='voucher_submitted' OR contract.user_id IS NULL) AND contract.created_at >= $1 - interval '1 hour' AND contract.created_at <= $1";
-  const result=await query<SubscriberRow>(`${base} WHERE ${where} ORDER BY contract.created_at DESC`,[anchor]);
-  return { subscribers:result.rows.map(serialize), referenceAt:anchor.toISOString() };
+  // The latest pending registration is the reference point, rather than the
+  // current time. This keeps the last one-hour cohort visible until a newer
+  // registration arrives, as requested for the dashboard projection.
+  const newSubscriber = "(contract.lifecycle_status='voucher_submitted' OR contract.user_id IS NULL)";
+  const result = await query<SubscriberRow>(`${base}
+    WHERE ${newSubscriber}
+      AND contract.created_at >= (
+        SELECT max(recent_contract.created_at) - interval '1 hour'
+        FROM promotion_contracts recent_contract
+        WHERE recent_contract.lifecycle_status='voucher_submitted' OR recent_contract.user_id IS NULL
+      )
+    ORDER BY contract.created_at DESC`);
+  return { subscribers: result.rows.map(serialize) };
 }
