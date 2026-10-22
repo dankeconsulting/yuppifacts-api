@@ -65,7 +65,7 @@ export async function deleteAdminSubscribers(ids:string[], confirmationIds?:numb
   if (targets.rows.length !== ids.length) throw new ApiError(404,"No encontramos uno o más registros.");
   if (targets.rows.some(record => record.platform_role === "master_admin")) throw new ApiError(403,"La cuenta administradora maestra no puede eliminarse.");
   if (confirmationIds) {
-    const expected = targets.rows.map(record => record.record_number).sort((a,b) => a-b);
+    const expected = targets.rows.map(record => Number(record.record_number)).sort((a,b) => a-b);
     const provided = [...new Set(confirmationIds)].sort((a,b) => a-b);
     if (provided.length !== expected.length || provided.some((value,index) => value !== expected[index])) {
       throw new ApiError(400,"Los IDs de confirmación no corresponden exactamente a los registros seleccionados.");
