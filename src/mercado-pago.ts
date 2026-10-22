@@ -8,7 +8,7 @@ import { queuePromotionEmail } from "./promotionNotifications.js";
 
 const environment = z.enum(["sandbox", "production"]);
 export const credentialsInput = z.object({ pin: z.string().regex(/^\d{4,12}$/), environment, publicKey: z.string().trim().min(10).max(300), accessToken: z.string().trim().min(10).max(500) });
-export const testConnectionInput = z.object({ pin: z.string().regex(/^\d{4,12}$/), environment });
+export const testConnectionInput = z.object({ environment });
 export const activateInput = testConnectionInput;
 export const credentialFieldInput = z.object({ environment, field: z.enum(["publicKey", "accessToken"]), pin: z.string().regex(/^\d{4}$/) });
 export const credentialUpdateInput = credentialFieldInput.extend({ value: z.string().trim().min(10).max(500) });
@@ -81,8 +81,8 @@ async function configurationFor(environmentValue: z.infer<typeof environment>) {
   return row;
 }
 
-export async function testConnection(input: z.infer<typeof testConnectionInput>) {
-  const actorId = await requireMasterPin(input.pin); const configuration = await configurationFor(input.environment);
+export async function testConnection(input: z.infer<typeof testConnectionInput>, actorId: string) {
+  const configuration = await configurationFor(input.environment);
   const response = await fetch("https://api.mercadopago.com/users/me", { headers: { Authorization: `Bearer ${decryptCredential(configuration.access_token_encrypted)}` } });
   if (!response.ok) { await query("UPDATE payment_provider_configurations SET connection_status = 'failed', last_tested_at = now() WHERE id = $1", [configuration.id]); throw new ApiError(400, "Mercado Pago rechazó las credenciales. Revisa el ambiente y el Access Token."); }
   await query("UPDATE payment_provider_configurations SET connection_status = 'tested', last_tested_at = now() WHERE id = $1", [configuration.id]);
@@ -90,8 +90,8 @@ export async function testConnection(input: z.infer<typeof testConnectionInput>)
   return { message: "Conexión con Mercado Pago validada." };
 }
 
-export async function activateConfiguration(input: z.infer<typeof activateInput>) {
-  const actorId = await requireMasterPin(input.pin); const configuration = await configurationFor(input.environment);
+export async function activateConfiguration(input: z.infer<typeof activateInput>, actorId: string) {
+  const configuration = await configurationFor(input.environment);
   if (configuration.connection_status !== "tested") throw new ApiError(409, "Primero valida la conexión con Mercado Pago.");
   await transaction(async (client) => { await client.query("UPDATE payment_provider_configurations SET is_active = false WHERE provider = 'mercado_pago'"); await client.query("UPDATE payment_provider_configurations SET is_active = true WHERE id = $1", [configuration.id]); });
   await query("INSERT INTO admin_security_events (actor_user_id, action, target_type, metadata) VALUES ($1, 'mercado_pago.activated', 'payment_provider', $2)", [actorId, JSON.stringify({ environment: input.environment })]);

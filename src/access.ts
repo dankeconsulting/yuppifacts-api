@@ -143,7 +143,12 @@ export async function changePin(token: string, input: z.infer<typeof changePinIn
 export async function requireMasterAdministrator(token: string) {
   const session = await getAccessSession(token);
   if (session.account.role !== "master_admin") throw new ApiError(403, "Esta acción requiere una sesión de administrador maestro.");
-  return session.account;
+  const result = await query<{ id: string }>(
+    "SELECT user_id AS id FROM application_sessions WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now() LIMIT 1",
+    [hashOpaqueToken(token)],
+  );
+  if (!result.rows[0]) throw new ApiError(401, "Tu sesión ya no está disponible.");
+  return { ...session.account, id: result.rows[0].id };
 }
 
 export async function confirmMasterPin(token: string, pin: string) {
