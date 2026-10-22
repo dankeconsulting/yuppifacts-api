@@ -71,19 +71,25 @@ export async function deleteAdminSubscribers(ids:string[], confirmationIds?:numb
       throw new ApiError(400,"Los IDs de confirmación no corresponden exactamente a los registros seleccionados.");
     }
   }
-  const records = await query<{user_id:string|null; storage_key:string|null}>(
-    `SELECT contract.user_id, voucher.storage_key
+  const records = await query<{contract_id:string; storage_key:string|null}>(
+    `SELECT contract.id AS contract_id, voucher.storage_key
        FROM promotion_contracts contract
        LEFT JOIN promotion_vouchers voucher ON voucher.promotion_contract_id=contract.id
       WHERE contract.id = ANY($1::uuid[])`, [ids],
   );
-  if (records.rows.length !== ids.length) throw new ApiError(404,"No encontramos uno o más registros.");
-  await deletePromotionVoucherObjects(records.rows.flatMap(record => record.storage_key ? [record.storage_key] : []));
+  if (new Set(records.rows.map(record => record.contract_id)).size !== ids.length) throw new ApiError(404,"No encontramos uno o más registros.");
+  await deletePromotionVoucherObjects([...new Set(records.rows.flatMap(record => record.storage_key ? [record.storage_key] : []))]);
   return transaction(async client => {
     const contracts=await client.query<{id:string;user_id:string|null;platform_role:string|null}>("SELECT contract.id,contract.user_id,user_record.platform_role FROM promotion_contracts contract LEFT JOIN users user_record ON user_record.id=contract.user_id WHERE contract.id = ANY($1::uuid[]) FOR UPDATE",[ids]);
     if(contracts.rows.length !== ids.length) throw new ApiError(404,"No encontramos uno o más registros.");
     if(contracts.rows.some(record=>record.platform_role === "master_admin")) throw new ApiError(403,"La cuenta administradora maestra no puede eliminarse.");
     const userIds=[...new Set(contracts.rows.flatMap(record=>record.user_id?[record.user_id]:[]))];
+    await client.query(
+      `DELETE FROM promotion_notification_outbox
+        WHERE promotion_contract_id = ANY($1::uuid[])
+           OR voucher_id IN (SELECT id FROM promotion_vouchers WHERE promotion_contract_id = ANY($1::uuid[]))`,
+      [ids],
+    );
     await client.query("DELETE FROM promotion_vouchers WHERE promotion_contract_id = ANY($1::uuid[])",[ids]);
     await client.query("DELETE FROM promotion_contracts WHERE id = ANY($1::uuid[])",[ids]);
     if(userIds.length) await client.query("DELETE FROM users WHERE id = ANY($1::uuid[]) AND platform_role <> 'master_admin'",[userIds]);
