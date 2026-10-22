@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ApiError } from "./contracting.js";
-import { query } from "./db.js";
+import { query, transaction } from "./db.js";
 
 const mode=z.enum(["individual","independent_accountant","accounting_firm","company","corporate"]);
 const billingPeriods=z.array(z.enum(["monthly","quarterly","semiannual","annual"])).min(1).max(4).refine(items=>new Set(items).size===items.length,"No repitas una periodicidad.");
@@ -11,6 +11,7 @@ export const regularPlanInput=z.object({mode,billingPeriods,name:z.string().trim
 export const regularPlanCreateInput=regularPlanInput.extend({id:planId});
 export const regularPlanUpdateInput=regularPlanInput.extend({id:planId});
 export const regularPlanIdInput=z.object({id:planId});
+export const regularPlanOrderInput=z.object({ids:z.array(planId).min(1).max(100)});
 
 type Row={id:string;profile:"accountant"|"company"|"corporate";mode:"individual"|"independent_accountant"|"accounting_firm"|"company"|"corporate";name:string;seats:string;monthly_amount_cents:number|null;quarterly_amount_cents:number|null;semiannual_amount_cents:number|null;annual_amount_cents:number|null;benefits:string[];active:boolean;display_order:number};
 const publicPlan=(row:Row)=>({id:row.id,profile:row.profile,mode:row.mode,name:row.name,seats:row.seats,monthlyAmountCents:row.monthly_amount_cents,quarterlyAmountCents:row.quarterly_amount_cents,semiannualAmountCents:row.semiannual_amount_cents,annualAmountCents:row.annual_amount_cents,billingPeriods:[...(row.monthly_amount_cents?["monthly"]:[]),...(row.quarterly_amount_cents?["quarterly"]:[]),...(row.semiannual_amount_cents?["semiannual"]:[]),...(row.annual_amount_cents?["annual"]:[])],benefits:row.benefits,active:row.active,displayOrder:row.display_order});
@@ -18,7 +19,8 @@ const returning=" RETURNING id,profile,mode,name,seats,monthly_amount_cents,quar
 const validate=(input:z.infer<typeof regularPlanCreateInput>)=>{const wants=(period:"monthly"|"quarterly"|"semiannual"|"annual")=>input.billingPeriods.includes(period);if((wants("monthly")&&!input.monthlyAmountCents)||(wants("quarterly")&&!input.quarterlyAmountCents)||(wants("semiannual")&&!input.semiannualAmountCents)||(wants("annual")&&!input.annualAmountCents))throw new ApiError(400,"Captura el monto de cada periodicidad seleccionada.");};
 const values=(input:z.infer<typeof regularPlanCreateInput>)=>{const wants=(period:"monthly"|"quarterly"|"semiannual"|"annual")=>input.billingPeriods.includes(period);const profile=input.mode==="company"?"company":input.mode==="corporate"?"corporate":"accountant";return [input.id,profile,input.mode,input.name,input.seats,wants("monthly")?input.monthlyAmountCents:null,wants("quarterly")?input.quarterlyAmountCents:null,wants("semiannual")?input.semiannualAmountCents:null,wants("annual")?input.annualAmountCents:null,JSON.stringify(input.benefits),input.active,input.displayOrder];};
 
-export async function listRegularPlans(){const result=await query<Row>("SELECT id,profile,mode,name,seats,monthly_amount_cents,quarterly_amount_cents,semiannual_amount_cents,annual_amount_cents,benefits,active,display_order FROM regular_plans ORDER BY mode,display_order,id");return result.rows.map(publicPlan);}
+export async function listRegularPlans(){const result=await query<Row>("SELECT id,profile,mode,name,seats,monthly_amount_cents,quarterly_amount_cents,semiannual_amount_cents,annual_amount_cents,benefits,active,display_order FROM regular_plans ORDER BY display_order,id");return result.rows.map(publicPlan);}
 export async function createRegularPlan(input:z.infer<typeof regularPlanCreateInput>){validate(input);try{const result=await query<Row>(`INSERT INTO regular_plans(id,profile,mode,name,seats,monthly_amount_cents,quarterly_amount_cents,semiannual_amount_cents,annual_amount_cents,benefits,active,display_order) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)${returning}`,values(input));return publicPlan(result.rows[0]);}catch(error){if((error as {code?:string}).code==="23505")throw new ApiError(409,"Ya existe un plan regular con ese nombre.");throw error;}}
 export async function updateRegularPlan(input:z.infer<typeof regularPlanUpdateInput>){validate(input);const result=await query<Row>(`UPDATE regular_plans SET profile=$2,mode=$3,name=$4,seats=$5,monthly_amount_cents=$6,quarterly_amount_cents=$7,semiannual_amount_cents=$8,annual_amount_cents=$9,benefits=$10,active=$11,display_order=$12 WHERE id=$1${returning}`,values(input));if(!result.rows[0])throw new ApiError(404,"No encontramos ese plan regular.");return publicPlan(result.rows[0]);}
 export async function deleteRegularPlan(id:string){const result=await query<{id:string}>("DELETE FROM regular_plans WHERE id=$1 RETURNING id",[id]);if(!result.rows[0])throw new ApiError(404,"No encontramos ese plan regular.");return {id:result.rows[0].id};}
+export async function reorderRegularPlans(ids:string[]){return transaction(async client=>{for(const[index,planId]of ids.entries())await client.query("UPDATE regular_plans SET display_order=$1 WHERE id=$2",[index+1,planId]);return {ids};});}
