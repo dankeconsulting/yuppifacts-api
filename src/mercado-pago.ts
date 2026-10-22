@@ -10,6 +10,8 @@ const environment = z.enum(["sandbox", "production"]);
 export const credentialsInput = z.object({ pin: z.string().regex(/^\d{4,12}$/), environment, publicKey: z.string().trim().min(10).max(300), accessToken: z.string().trim().min(10).max(500) });
 export const testConnectionInput = z.object({ pin: z.string().regex(/^\d{4,12}$/), environment });
 export const activateInput = testConnectionInput;
+export const credentialFieldInput = z.object({ environment, field: z.enum(["publicKey", "accessToken"]), pin: z.string().regex(/^\d{4}$/) });
+export const credentialUpdateInput = credentialFieldInput.extend({ value: z.string().trim().min(10).max(500) });
 
 type Configuration = { id: string; environment: "sandbox" | "production"; public_key_encrypted: string; access_token_encrypted: string; connection_status: "configured" | "tested" | "failed"; is_active: boolean; last_tested_at: Date | null };
 type CheckoutSession = { id: string; folio: string; plan_id: string; billing_period: string; quoted_amount_cents: number; currency: string; lifecycle_status: string; access_token_hash: string };
@@ -20,13 +22,45 @@ async function requireMasterPin(pin: string) {
   return master.rows[0].id;
 }
 function publicConfiguration(row: Configuration) {
-  return { environment: row.environment, configured: true, connectionStatus: row.connection_status, isActive: row.is_active, lastTestedAt: row.last_tested_at?.toISOString() ?? null, publicKeyMasked: maskCredential(decryptCredential(row.public_key_encrypted)), accessTokenMasked: maskCredential(decryptCredential(row.access_token_encrypted)) };
+  const publicKey = decryptCredential(row.public_key_encrypted);
+  const accessToken = decryptCredential(row.access_token_encrypted);
+  return { environment: row.environment, configured: Boolean(publicKey && accessToken), connectionStatus: row.connection_status, isActive: row.is_active, lastTestedAt: row.last_tested_at?.toISOString() ?? null, publicKeyMasked: publicKey ? maskCredential(publicKey) : "", accessTokenMasked: accessToken ? maskCredential(accessToken) : "" };
 }
 
-export async function listConfigurations(pin: string) {
-  await requireMasterPin(pin);
+export async function listConfigurations() {
   const result = await query<Configuration>("SELECT * FROM payment_provider_configurations WHERE provider = 'mercado_pago' ORDER BY environment");
   return { environments: result.rows.map(publicConfiguration) };
+}
+
+export async function revealCredential(input: z.infer<typeof credentialFieldInput>) {
+  const actorId = await requireMasterPin(input.pin);
+  const configuration = await configurationFor(input.environment);
+  const value = input.field === "publicKey" ? decryptCredential(configuration.public_key_encrypted) : decryptCredential(configuration.access_token_encrypted);
+  if (!value) throw new ApiError(404, "Esta credencial aún no está configurada.");
+  await query("INSERT INTO admin_security_events (actor_user_id, action, target_type, metadata) VALUES ($1, 'mercado_pago.credential_revealed', 'payment_provider', $2)", [actorId, JSON.stringify({ environment: input.environment, field: input.field })]);
+  return { value };
+}
+
+export async function updateCredential(input: z.infer<typeof credentialUpdateInput>) {
+  const actorId = await requireMasterPin(input.pin);
+  const publicKey = input.field === "publicKey" ? input.value : "";
+  const accessToken = input.field === "accessToken" ? input.value : "";
+  const column = input.field === "publicKey" ? "public_key_encrypted" : "access_token_encrypted";
+  await query(
+    `INSERT INTO payment_provider_configurations (provider, environment, public_key_encrypted, access_token_encrypted, connection_status, is_active)
+     VALUES ('mercado_pago', $1, $2, $3, 'configured', false)
+     ON CONFLICT (provider, environment) DO UPDATE SET ${column} = EXCLUDED.${column}, connection_status = 'configured', is_active = false`,
+    [input.environment, encryptCredential(publicKey), encryptCredential(accessToken)],
+  );
+  await query("INSERT INTO admin_security_events (actor_user_id, action, target_type, metadata) VALUES ($1, 'mercado_pago.credential_updated', 'payment_provider', $2)", [actorId, JSON.stringify({ environment: input.environment, field: input.field })]);
+}
+
+export async function deleteCredential(input: z.infer<typeof credentialFieldInput>) {
+  const actorId = await requireMasterPin(input.pin);
+  const column = input.field === "publicKey" ? "public_key_encrypted" : "access_token_encrypted";
+  const result = await query(`UPDATE payment_provider_configurations SET ${column} = $2, connection_status = 'configured', is_active = false WHERE provider = 'mercado_pago' AND environment = $1`, [input.environment, encryptCredential("")]);
+  if (!result.rowCount) throw new ApiError(404, "Esta configuración no existe.");
+  await query("INSERT INTO admin_security_events (actor_user_id, action, target_type, metadata) VALUES ($1, 'mercado_pago.credential_deleted', 'payment_provider', $2)", [actorId, JSON.stringify({ environment: input.environment, field: input.field })]);
 }
 
 export async function saveCredentials(input: z.infer<typeof credentialsInput>) {
