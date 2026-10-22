@@ -16,6 +16,7 @@ export const promotionPlanInput = z.object({
 export const promotionPlanCreateInput = promotionPlanInput.extend({ id: planId });
 export const promotionPlanUpdateInput = promotionPlanInput.extend({ id: planId });
 export const promotionPlanIdInput=z.object({id:planId});
+export const promotionPlanOrderInput=z.object({ids:z.array(planId).min(1).max(100)});
 
 type Row = { id:string; profile:"accountant"|"company"|"corporate"; mode:"individual"|"independent_accountant"|"accounting_firm"|"company"|"corporate"; name:string; seats:string; monthly_amount_cents:number|null; quarterly_amount_cents:number|null; semiannual_amount_cents:number|null; annual_amount_cents:number|null; regular_monthly_amount_cents:number|null; benefits:string[]; active:boolean; display_order:number };
 
@@ -25,7 +26,7 @@ export async function listPublicPromotionPlans() {
   return activeCampaignPlans();
 }
 export async function listPromotionPlans() {
-  const result = await query<Row>("SELECT id,profile,mode,name,seats,monthly_amount_cents,quarterly_amount_cents,semiannual_amount_cents,annual_amount_cents,regular_monthly_amount_cents,benefits,active,display_order FROM promotion_plans ORDER BY mode,display_order,id");
+  const result = await query<Row>("SELECT id,profile,mode,name,seats,monthly_amount_cents,quarterly_amount_cents,semiannual_amount_cents,annual_amount_cents,regular_monthly_amount_cents,benefits,active,display_order FROM promotion_plans ORDER BY display_order,id");
   return result.rows.map(publicPlan);
 }
 async function save(input:z.infer<typeof promotionPlanCreateInput>, exists:boolean) {
@@ -41,3 +42,4 @@ async function save(input:z.infer<typeof promotionPlanCreateInput>, exists:boole
 export const createPromotionPlan = (input:z.infer<typeof promotionPlanCreateInput>) => save(input,false);
 export const updatePromotionPlan = (input:z.infer<typeof promotionPlanUpdateInput>) => save(input,true);
 export async function deletePromotionPlan(id:string){return transaction(async client=>{const mappings=await client.query("DELETE FROM promotion_campaign_plans WHERE plan_id=$1",[id]);const deleted=await client.query<{id:string}>("DELETE FROM promotion_plans WHERE id=$1 RETURNING id",[id]);if(!deleted.rows[0])throw new ApiError(404,"No encontramos ese plan promocional.");return {id:deleted.rows[0].id,removedFromCampaigns:mappings.rowCount??0};});}
+export async function reorderPromotionPlans(ids:string[]){return transaction(async client=>{for(const[index,planId]of ids.entries())await client.query("UPDATE promotion_plans SET display_order=$1 WHERE id=$2",[index+1,planId]);return {ids};});}
