@@ -80,7 +80,7 @@ export async function deleteAdminSubscribers(ids:string[], confirmationIds?:numb
   if (new Set(records.rows.map(record => record.contract_id)).size !== ids.length) throw new ApiError(404,"No encontramos uno o más registros.");
   await deletePromotionVoucherObjects([...new Set(records.rows.flatMap(record => record.storage_key ? [record.storage_key] : []))]);
   return transaction(async client => {
-    const contracts=await client.query<{id:string;user_id:string|null;platform_role:string|null}>("SELECT contract.id,contract.user_id,user_record.platform_role FROM promotion_contracts contract LEFT JOIN users user_record ON user_record.id=contract.user_id WHERE contract.id = ANY($1::uuid[]) FOR UPDATE",[ids]);
+    const contracts=await client.query<{id:string;user_id:string|null;platform_role:string|null}>("SELECT contract.id,contract.user_id,user_record.platform_role FROM promotion_contracts contract LEFT JOIN users user_record ON user_record.id=contract.user_id WHERE contract.id = ANY($1::uuid[]) FOR UPDATE OF contract",[ids]);
     if(contracts.rows.length !== ids.length) throw new ApiError(404,"No encontramos uno o más registros.");
     if(contracts.rows.some(record=>record.platform_role === "master_admin")) throw new ApiError(403,"La cuenta administradora maestra no puede eliminarse.");
     const userIds=[...new Set(contracts.rows.flatMap(record=>record.user_id?[record.user_id]:[]))];
