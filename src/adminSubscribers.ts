@@ -109,17 +109,10 @@ export async function deleteUnlinkedPromotionTestData() {
 }
 
 export async function listRecentAdminSubscribers() {
-  // The latest pending registration is the reference point, rather than the
-  // current time. This keeps the last one-hour cohort visible until a newer
-  // registration arrives, as requested for the dashboard projection.
+  // This Dashboard block is a projection of the same pending-record table
+  // used by "Usuarios nuevos". Keeping one source prevents records from
+  // disappearing from the dashboard while they remain pending there.
   const newSubscriber = "(contract.lifecycle_status='voucher_submitted' OR contract.user_id IS NULL)";
-  const result = await query<SubscriberRow>(`${base}
-    WHERE ${newSubscriber}
-      AND contract.created_at >= (
-        SELECT max(recent_contract.created_at) - interval '1 hour'
-        FROM promotion_contracts recent_contract
-        WHERE recent_contract.lifecycle_status='voucher_submitted' OR recent_contract.user_id IS NULL
-      )
-    ORDER BY contract.created_at DESC`);
+  const result = await query<SubscriberRow>(`${base} WHERE ${newSubscriber} ORDER BY contract.created_at DESC`);
   return { subscribers: result.rows.map(serialize) };
 }
