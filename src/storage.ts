@@ -25,9 +25,20 @@ const hasPartialR2Configuration = r2Values.some(Boolean) && !isR2Configured;
 // exposing a credential in logs.
 export const r2ConfigurationStatus = {
   accountId: Boolean(r2AccountId),
+  accountIdFormatValid: /^[a-f0-9]{32}$/i.test(r2AccountId ?? ""),
   accessKeyId: Boolean(r2AccessKeyId),
   secretAccessKey: Boolean(r2SecretAccessKey),
   bucket: Boolean(r2Bucket),
+  endpointConfigured: Boolean(r2Endpoint),
+  endpointMatchesAccount: r2Endpoint
+    ? (() => {
+        try {
+          return new URL(r2Endpoint).hostname === `${r2AccountId}.r2.cloudflarestorage.com`;
+        } catch {
+          return false;
+        }
+      })()
+    : true,
   configured: isR2Configured,
 };
 
