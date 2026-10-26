@@ -1,5 +1,5 @@
 import { DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3"; import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-type SupportedContentType = "application/pdf" | "image/jpeg" | "image/png";
+export type SupportedContentType = "application/pdf" | "image/jpeg" | "image/png" | "image/webp" | "application/xml" | "text/xml";
 type StorageProvider = "aws-s3" | "cloudflare-r2";
 
 const legacyBucket = process.env.AWS_S3_BUCKET;
@@ -72,6 +72,35 @@ export async function createUploadUrl(input: { taxpayerId: string; filename: str
     uploadUrl: await getSignedUrl(storage.client, uploadCommand(storage.provider, storage.bucket, key, input.contentType, { taxpayerId: input.taxpayerId }), { expiresIn: 300 }),
     expiresIn: 300,
   };
+}
+
+export async function createUserAvatarUploadUrl(input: { userId: string; filename: string; contentType: Extract<SupportedContentType, "image/jpeg" | "image/png" | "image/webp"> }) {
+  const storage = storageForNewFile();
+  const safeName = input.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const key = keyForNewFile(`users/${input.userId}/avatar`, safeName);
+  return {
+    key,
+    uploadUrl: await getSignedUrl(storage.client, uploadCommand(storage.provider, storage.bucket, key, input.contentType, { userId: input.userId, assetType: "avatar" }), { expiresIn: 300 }),
+    expiresIn: 300,
+  };
+}
+
+export async function verifyUserAvatarUpload(input: { key: string; contentType: Extract<SupportedContentType, "image/jpeg" | "image/png" | "image/webp">; byteSize: number }) {
+  try {
+    const storage = storageForKey(input.key);
+    const object = await storage.client.send(new HeadObjectCommand({ Bucket: storage.bucket, Key: input.key }));
+    return object.ContentType === input.contentType && object.ContentLength === input.byteSize;
+  } catch { return false; }
+}
+
+export async function createPrivateViewUrl(key: string) {
+  const storage = storageForKey(key);
+  return getSignedUrl(storage.client, new GetObjectCommand({ Bucket: storage.bucket, Key: key }), { expiresIn: 300 });
+}
+
+export async function deletePrivateObject(key: string) {
+  const storage = storageForKey(key);
+  await storage.client.send(new DeleteObjectsCommand({ Bucket: storage.bucket, Delete: { Objects: [{ Key: key }], Quiet: true } }));
 }
 
 export async function createPromotionVoucherUploadUrl(input: { voucherId: string; filename: string; contentType: SupportedContentType }) {
