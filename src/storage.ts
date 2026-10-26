@@ -13,6 +13,8 @@ const r2AccountId = firstEnvironmentValue("R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCOUN
 const r2AccessKeyId = firstEnvironmentValue("R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_ACCESS_KEY");
 const r2SecretAccessKey = firstEnvironmentValue("R2_SECRET_ACCESS_KEY", "CLOUDFLARE_R2_SECRET_ACCESS_KEY", "CLOUDFLARE_R2_SECRET_KEY");
 const r2Bucket = firstEnvironmentValue("R2_BUCKET", "CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME");
+const r2Endpoint = firstEnvironmentValue("R2_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT");
+const r2Region = firstEnvironmentValue("R2_REGION", "CLOUDFLARE_R2_REGION") ?? "auto";
 const r2Prefix = (firstEnvironmentValue("R2_PREFIX", "CLOUDFLARE_R2_PREFIX") ?? "yuppifacts").replace(/^\/+|\/+$/g, "");
 const r2Values = [r2AccountId, r2AccessKeyId, r2SecretAccessKey, r2Bucket];
 const isR2Configured = r2Values.every(Boolean);
@@ -31,8 +33,10 @@ export const r2ConfigurationStatus = {
 
 const r2Client = isR2Configured
   ? new S3Client({
-      region: "auto",
-      endpoint: `https://${r2AccountId}.r2.cloudflarestorage.com`,
+      region: r2Region,
+      // Prefer Cloudflare's exact S3 API endpoint when it is configured in
+      // Render. This avoids altering or guessing the endpoint copied from R2.
+      endpoint: r2Endpoint?.replace(/\/+$/, "") ?? `https://${r2AccountId}.r2.cloudflarestorage.com`,
       forcePathStyle: true,
       credentials: { accessKeyId: r2AccessKeyId!, secretAccessKey: r2SecretAccessKey! },
     })
