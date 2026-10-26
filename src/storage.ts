@@ -151,7 +151,15 @@ export async function createPromotionVoucherUploadUrl(input: { voucherId: string
   const prefix=storage.provider === "cloudflare-r2" ? "promotions/vouchers" : legacyPrefix;
   const baseKey=`${prefix}/${input.voucherId}/${safeName}`;
   const key=isR2Configured ? `r2/${r2Prefix}/${baseKey}` : baseKey;
-  return { key, uploadUrl:await getSignedUrl(storage.client, uploadCommand(storage.provider, storage.bucket, key, input.contentType, { voucherId: input.voucherId }),{expiresIn:300}),expiresIn:300 };
+  const uploadUrl=await getSignedUrl(storage.client, uploadCommand(storage.provider, storage.bucket, key, input.contentType, { voucherId: input.voucherId }),{expiresIn:300});
+  // Cloudflare R2 uses S3-compatible signed URLs, but it does not accept the
+  // AWS-only server-side-encryption request header used by the legacy bucket.
+  // Returning the exact headers required by the selected provider keeps the
+  // browser upload aligned with the URL signature.
+  const uploadHeaders=storage.provider === "aws-s3"
+    ? { "content-type": input.contentType, "x-amz-server-side-encryption": "AES256" }
+    : { "content-type": input.contentType };
+  return { key, uploadUrl, uploadHeaders, expiresIn:300 };
 }
 
 export async function verifyPromotionVoucherUpload(input: { key: string; contentType: SupportedContentType; byteSize: number }) {
