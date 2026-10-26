@@ -14,8 +14,13 @@ export const adminPasswordLoginInput = z.object({ username: z.string().trim().mi
 type UserRow = { id: string; full_name: string; username: string | null; phone_e164: string; password_hash: string | null; pin_hash: string; platform_role: string; account_status: string; is_online: boolean };
 type ChallengeRow = { id: string; user_id: string; code_hash: string; verification_token_hash: string | null; expires_at: Date; attempts: number; max_attempts: number; verified_at: Date | null; completed_at: Date | null; invalidated_at: Date | null };
 
-function accountSummary(user: Pick<UserRow, "full_name" | "username" | "phone_e164" | "platform_role">) {
-  return { fullName: user.full_name, username: user.username, phoneE164: user.phone_e164, role: user.platform_role };
+function accountSummary(user: Pick<UserRow, "full_name" | "username" | "phone_e164" | "platform_role" | "account_status" | "is_online">) {
+  return { fullName: user.full_name, username: user.username, phoneE164: user.phone_e164, role: user.platform_role, accountStatus: user.account_status, online: user.is_online };
+}
+
+function canUsePanel(user: UserRow) {
+  if (user.platform_role === "master_admin") return user.account_status === "active" && user.is_online;
+  return user.platform_role === "subscriber" && ["pending_review", "active"].includes(user.account_status);
 }
 
 async function createApplicationSession(client: PoolClient, user: UserRow, metadata: { ipHash: string | null; userAgent: string | undefined }) {
@@ -38,7 +43,7 @@ export async function issueLoginCode(input: z.infer<typeof issueLoginCodeInput>)
     );
     const user = found.rows[0];
     if (!user) throw new ApiError(404, "Aún no tienes una cuenta. Puedes crearla ahora o continuar después con tu registro.", "ACCOUNT_NOT_FOUND");
-    if (user.account_status !== "active" || !user.is_online) throw new ApiError(403, "Tu cuenta existe, pero aún no está habilitada para entrar.", "ACCOUNT_NOT_READY");
+    if (!canUsePanel(user)) throw new ApiError(403, "Tu cuenta existe, pero aún no está disponible para entrar.", "ACCOUNT_NOT_READY");
 
     const prior = await client.query<{ resend_available_at: Date }>(
       `SELECT resend_available_at FROM access_challenges
@@ -85,7 +90,7 @@ export async function completeLogin(input: z.infer<typeof completeLoginInput>, m
     if (!challenge || challenge.invalidated_at || challenge.completed_at || !challenge.verified_at || challenge.expires_at <= new Date() || !challenge.verification_token_hash || !safeEqualSecret(hashOpaqueToken(input.verificationToken), challenge.verification_token_hash)) throw new ApiError(401, "La verificación ya no es válida. Solicita un código nuevo.");
     const userResult = await client.query<UserRow>("SELECT id, full_name, username, phone_e164, password_hash, pin_hash, platform_role, account_status, is_online FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", [challenge.user_id]);
     const user = userResult.rows[0];
-    if (!user || user.account_status !== "active" || !user.is_online) throw new ApiError(403, "Tu cuenta no está habilitada para entrar.", "ACCOUNT_NOT_READY");
+    if (!user || !canUsePanel(user)) throw new ApiError(403, "Tu cuenta no está disponible para entrar.", "ACCOUNT_NOT_READY");
     if (!(await verifySecret(input.pin, user.pin_hash))) throw new ApiError(401, "El PIN no coincide.");
     await client.query("UPDATE access_challenges SET completed_at = now(), invalidated_at = now() WHERE id = $1", [challenge.id]);
     return createApplicationSession(client, user, metadata);
@@ -118,7 +123,7 @@ export async function getAccessSession(token: string) {
     [hashOpaqueToken(token)],
   );
   const user = result.rows[0];
-  if (!user || user.account_status !== "active" || !user.is_online) throw new ApiError(401, "Tu sesión ya no está disponible.");
+  if (!user || !canUsePanel(user)) throw new ApiError(401, "Tu sesión ya no está disponible.");
   return { account: accountSummary(user) };
 }
 

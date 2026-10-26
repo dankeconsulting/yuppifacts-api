@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { ApiError } from "./contracting.js";
 import { query, transaction } from "./db.js";
-import { deletePromotionVoucherObjects, PromotionVoucherDeletionError } from "./storage.js";
+import { createPromotionVoucherViewUrl, deletePromotionVoucherObjects, PromotionVoucherDeletionError } from "./storage.js";
+import { deliverPromotionEmail, queuePromotionEmail } from "./promotionNotifications.js";
+import { logSubscriberActivity } from "./subscriberActivity.js";
 
 export const subscriberStageInput = z.object({ stage: z.enum(["new", "review", "active"]) });
 export const subscriberIdInput = z.object({ id: z.string().uuid() });
-export const onlineInput = subscriberIdInput.extend({ online: z.boolean() });
+export const onlineInput = subscriberIdInput.extend({ online: z.boolean(), incidentId:z.string().uuid().optional(), detail:z.string().trim().max(800).optional() });
 export const deleteSubscribersInput = z.object({
   ids: z.array(z.string().uuid()).min(1).max(100),
   confirmationIds: z.array(z.coerce.number().int().positive()).min(1).max(100),
@@ -19,7 +21,7 @@ function profileLabel(mode:string|null, planId:string) {
 }
 function serialize(row:SubscriberRow) {
   const isTemporary = !row.user_id;
-  return { id:row.id, userId:row.user_id, userNumber:row.user_number, recordNumber:row.user_number ?? row.admin_reference, isTemporary, role:isTemporary ? "Registro temporal" : row.platform_role === "master_admin" ? "Administrador maestro" : "Suscriptor", fullName:row.full_name, email:row.email, phone:row.phone_e164, countryCode:row.country_code ?? "MX", state:row.state_name, city:row.city_name, profile:profileLabel(row.mode,row.plan_id), planId:row.plan_id, billingPeriod:row.billing_period, quotedAmountCents:row.quoted_amount_cents, subscriptionTag:row.subscription_tag, registeredAt:row.created_at.toISOString(), renewalAt:row.renewal_at?.toISOString() ?? null, voucher:{ id:row.voucher_id, filename:row.voucher_filename, storageKey:row.voucher_key }, accountStatus:row.account_status, online:Boolean(row.is_online) };
+  return { id:row.id, userId:row.user_id, userNumber:row.user_number, recordNumber:row.user_number ?? row.admin_reference, isTemporary, role:isTemporary ? "Registro temporal" : row.platform_role === "master_admin" ? "Administrador maestro" : "Suscriptor", fullName:row.full_name, email:row.email, phone:row.phone_e164, countryCode:row.country_code ?? "MX", state:row.state_name, city:row.city_name, profile:profileLabel(row.mode,row.plan_id), planId:row.plan_id, billingPeriod:row.billing_period, quotedAmountCents:row.quoted_amount_cents, subscriptionTag:row.subscription_tag, registeredAt:row.created_at.toISOString(), renewalAt:row.renewal_at?.toISOString() ?? null, voucher:{ id:row.voucher_id, filename:row.voucher_filename, storageKey:row.voucher_key }, lifecycleStatus:row.lifecycle_status, accountStatus:row.account_status, online:Boolean(row.is_online) };
 }
 const base = `SELECT contract.id,contract.admin_reference,contract.full_name,contract.email,contract.phone_e164,contract.country_code,contract.state_name,contract.city_name,contract.plan_id,contract.billing_period,contract.quoted_amount_cents,contract.lifecycle_status,contract.subscription_tag,contract.created_at,contract.renewal_at,contract.user_id,user_record.user_number,user_record.platform_role,user_record.account_status,user_record.is_online,contract.plan_snapshot->>'mode' AS mode,voucher.id AS voucher_id,voucher.original_filename AS voucher_filename,voucher.storage_key AS voucher_key FROM promotion_contracts contract LEFT JOIN users user_record ON user_record.id=contract.user_id LEFT JOIN LATERAL (SELECT id,original_filename,storage_key FROM promotion_vouchers WHERE promotion_contract_id=contract.id ORDER BY submitted_at DESC NULLS LAST LIMIT 1) voucher ON true`;
 
@@ -27,7 +29,7 @@ export async function listAdminSubscribers(stage:z.infer<typeof subscriberStageI
   // Legacy contracts created before the temporary-account flow have no user or
   // PIN. They intentionally stay visible in "Usuarios nuevos" so a master
   // administrator can review and remove them through the protected flow.
-  const where = stage === "new" ? "(contract.lifecycle_status='voucher_submitted' OR contract.user_id IS NULL)" : stage === "review" ? "contract.lifecycle_status='payment_verified' AND COALESCE(user_record.is_online,false)=false" : "user_record.account_status='active' AND user_record.is_online=true";
+  const where = stage === "new" ? "(contract.lifecycle_status='voucher_submitted' OR contract.user_id IS NULL)" : stage === "review" ? "contract.lifecycle_status='payment_verified'" : "contract.lifecycle_status IN ('approved','active') AND user_record.account_status='active'";
   const result = await query<SubscriberRow>(`${base} WHERE ${where} ORDER BY contract.created_at DESC`);
   return { subscribers: result.rows.map(serialize) };
 }
@@ -36,23 +38,64 @@ export async function getAdminSubscriber(id:string) {
   if(!result.rows[0]) throw new ApiError(404,"No encontramos este suscriptor.");
   return { subscriber:serialize(result.rows[0]) };
 }
-export async function moveSubscriberToReview(id:string) {
-  return transaction(async client => {
+export async function getAdminSubscriberVoucherUrl(id:string) {
+  const result=await query<{storage_key:string|null}>(
+    `SELECT voucher.storage_key
+       FROM promotion_contracts contract
+       LEFT JOIN LATERAL (
+         SELECT storage_key FROM promotion_vouchers
+          WHERE promotion_contract_id=contract.id AND status IN ('submitted','verified')
+          ORDER BY submitted_at DESC NULLS LAST LIMIT 1
+       ) voucher ON true
+      WHERE contract.id=$1`,
+    [id],
+  );
+  const key=result.rows[0]?.storage_key;
+  if(!key) throw new ApiError(404,"Este suscriptor no tiene un comprobante disponible.");
+  return { url:await createPromotionVoucherViewUrl(key),expiresIn:300 };
+}
+export async function moveSubscriberToReview(id:string, actorUserId?:string) {
+  const subscriber = await transaction(async client => {
     const contract=await client.query<{user_id:string|null}>("SELECT user_id FROM promotion_contracts WHERE id=$1 AND lifecycle_status='voucher_submitted' FOR UPDATE",[id]);
     if(!contract.rows[0]?.user_id) throw new ApiError(409,"El comprobante o la cuenta pendiente no están disponibles.");
     await client.query("UPDATE promotion_vouchers SET status='verified',reviewed_at=now() WHERE promotion_contract_id=$1 AND status='submitted'",[id]);
-    await client.query("UPDATE promotion_contracts SET lifecycle_status='payment_verified',subscription_started_at=COALESCE(subscription_started_at,now()),renewal_at=COALESCE(renewal_at,now() + CASE billing_period WHEN 'monthly' THEN interval '1 month' WHEN 'quarterly' THEN interval '3 months' WHEN 'semiannual' THEN interval '6 months' ELSE interval '1 year' END) WHERE id=$1",[id]);
+    await client.query("UPDATE promotion_contracts SET lifecycle_status='payment_verified' WHERE id=$1",[id]);
+    await logSubscriberActivity(client,{contractId:id,actorUserId,action:"payment_verified",title:"Pago validado",detail:"El comprobante fue validado y la cuenta pasó a Usuarios en revisión."});
+    return getAdminSubscriber(id);
+  });
+  const emailId = await queuePromotionEmail({ promotionId:id, recipient:subscriber.subscriber.email, template:"payment_verified", payload:{ fullName:subscriber.subscriber.fullName } });
+  if (emailId) void deliverPromotionEmail(emailId);
+  return subscriber;
+}
+export async function approveSubscriber(id:string, actorUserId?:string) {
+  return transaction(async client => {
+    const result=await client.query<{user_id:string|null}>("SELECT user_id FROM promotion_contracts WHERE id=$1 AND lifecycle_status='payment_verified' FOR UPDATE",[id]);
+    if(!result.rows[0]?.user_id) throw new ApiError(409,"Esta cuenta debe estar en revisión antes de activarla.");
+    await client.query("UPDATE users SET account_status='active',is_online=false WHERE id=$1",[result.rows[0].user_id]);
+    await client.query("UPDATE promotion_contracts SET lifecycle_status='approved' WHERE id=$1",[id]);
+    await logSubscriberActivity(client,{contractId:id,actorUserId,action:"account_approved",title:"Cuenta activada",detail:"La cuenta pasó a Usuarios y permanece fuera de línea."});
     return getAdminSubscriber(id);
   });
 }
-export async function setSubscriberOnline(id:string,online:boolean) {
-  return transaction(async client => {
-    const result=await client.query<{user_id:string|null}>("SELECT user_id FROM promotion_contracts WHERE id=$1 AND lifecycle_status='payment_verified' FOR UPDATE",[id]);
+export async function setSubscriberOnline(id:string,online:boolean, options:{incidentId?:string;detail?:string;actorUserId?:string}={}) {
+  const subscriber = await transaction(async client => {
+    const result=await client.query<{user_id:string|null}>("SELECT user_id FROM promotion_contracts WHERE id=$1 AND lifecycle_status IN ('approved','active') FOR UPDATE",[id]);
     if(!result.rows[0]?.user_id) throw new ApiError(409,"Esta cuenta aún no está lista para ponerse en línea.");
+    if(!online){
+      if(!options.incidentId) throw new ApiError(400,"Selecciona una incidencia para poner la cuenta fuera de línea.");
+      const incident=await client.query("SELECT id FROM subscriber_incidents WHERE id=$1 AND is_active=true",[options.incidentId]);
+      if(!incident.rows[0]) throw new ApiError(400,"La incidencia seleccionada ya no está disponible.");
+    }
     await client.query("UPDATE users SET account_status=$2,is_online=$3 WHERE id=$1",[result.rows[0].user_id,online ? "active" : "pending_review",online]);
-    if(online) await client.query("UPDATE promotion_contracts SET lifecycle_status='active' WHERE id=$1",[id]);
+    await client.query(online ? "UPDATE promotion_contracts SET lifecycle_status='active',subscription_started_at=COALESCE(subscription_started_at,now()),renewal_at=COALESCE(renewal_at,now() + CASE billing_period WHEN 'monthly' THEN interval '1 month' WHEN 'quarterly' THEN interval '3 months' WHEN 'semiannual' THEN interval '6 months' ELSE interval '1 year' END) WHERE id=$1" : "UPDATE promotion_contracts SET lifecycle_status='approved' WHERE id=$1",[id]);
+    await logSubscriberActivity(client,{contractId:id,actorUserId:options.actorUserId,incidentId:options.incidentId,action:online?"account_online":"account_offline",title:online?"Cuenta puesta en línea":"Cuenta puesta fuera de línea",detail:online?"Se habilitó el acceso operativo e inició la vigencia de la membresía.":options.detail||"El acceso operativo fue puesto fuera de línea."});
     return getAdminSubscriber(id);
   });
+  if (online) {
+    const emailId = await queuePromotionEmail({ promotionId:id, recipient:subscriber.subscriber.email, template:"panel_access", payload:{ fullName:subscriber.subscriber.fullName } });
+    if (emailId) void deliverPromotionEmail(emailId);
+  }
+  return subscriber;
 }
 export async function deleteAdminSubscribers(ids:string[], confirmationIds?:number[]) {
   const targets = await query<{id:string; record_number:number; platform_role:string|null}>(

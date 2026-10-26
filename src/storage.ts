@@ -1,4 +1,4 @@
-import { DeleteObjectsCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3"; import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3"; import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 const bucket=process.env.AWS_S3_BUCKET; const client=new S3Client({region:process.env.AWS_REGION});
 export class PromotionVoucherDeletionError extends Error {
   constructor(public readonly codes:string[]) { super("No fue posible eliminar todos los comprobantes almacenados."); }
@@ -23,6 +23,11 @@ export async function verifyPromotionVoucherUpload(input:{key:string;contentType
     const object=await client.send(new HeadObjectCommand({Bucket:bucket,Key:input.key}));
     return object.ContentType === input.contentType && object.ContentLength === input.byteSize;
   } catch { return false; }
+}
+
+export async function createPromotionVoucherViewUrl(key:string) {
+  if (!bucket) throw new Error("AWS_S3_BUCKET is required");
+  return getSignedUrl(client,new GetObjectCommand({Bucket:bucket,Key:key}),{expiresIn:300});
 }
 
 export async function deletePromotionVoucherObjects(keys: string[]) {
