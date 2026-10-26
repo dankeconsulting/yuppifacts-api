@@ -16,7 +16,8 @@ function escapeHtml(value:string) {
 }
 
 function formattedSender(address:string) {
-  return address.includes("<") ? address : `"${senderName}" <${address}>`;
+  const mailbox = address.match(/<([^>]+)>/)?.[1] ?? address.trim();
+  return `"${senderName}" <${mailbox}>`;
 }
 
 function brandedEmail(title:string, content:string) {
