@@ -16,7 +16,21 @@ const r2Bucket = firstEnvironmentValue("R2_BUCKET", "CLOUDFLARE_R2_BUCKET", "R2_
 const r2Endpoint = firstEnvironmentValue("R2_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT");
 const r2Region = firstEnvironmentValue("R2_REGION", "CLOUDFLARE_R2_REGION") ?? "auto";
 const r2Prefix = (firstEnvironmentValue("R2_PREFIX", "CLOUDFLARE_R2_PREFIX") ?? "yuppifacts").replace(/^\/+|\/+$/g, "");
-const r2Values = [r2AccountId, r2AccessKeyId, r2SecretAccessKey, r2Bucket];
+function asR2Endpoint(value: string | undefined) {
+  if (!value) return undefined;
+  try {
+    const endpoint = new URL(value);
+    return endpoint.hostname.endsWith(".r2.cloudflarestorage.com") ? endpoint.toString().replace(/\/$/, "") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Accept the endpoint from its dedicated variable, and also gracefully support
+// a prior setup where Cloudflare's S3 API URL was pasted in the account-id field.
+const resolvedR2Endpoint = asR2Endpoint(r2Endpoint) ?? asR2Endpoint(r2AccountId)
+  ?? (/^[a-f0-9]{32}$/i.test(r2AccountId ?? "") ? `https://${r2AccountId}.r2.cloudflarestorage.com` : undefined);
+const r2Values = [resolvedR2Endpoint, r2AccessKeyId, r2SecretAccessKey, r2Bucket];
 const isR2Configured = r2Values.every(Boolean);
 const hasPartialR2Configuration = r2Values.some(Boolean) && !isR2Configured;
 
@@ -30,6 +44,7 @@ export const r2ConfigurationStatus = {
   secretAccessKey: Boolean(r2SecretAccessKey),
   bucket: Boolean(r2Bucket),
   endpointConfigured: Boolean(r2Endpoint),
+  endpointValid: Boolean(resolvedR2Endpoint),
   endpointMatchesAccount: r2Endpoint
     ? (() => {
         try {
@@ -47,7 +62,7 @@ const r2Client = isR2Configured
       region: r2Region,
       // Prefer Cloudflare's exact S3 API endpoint when it is configured in
       // Render. This avoids altering or guessing the endpoint copied from R2.
-      endpoint: r2Endpoint?.replace(/\/+$/, "") ?? `https://${r2AccountId}.r2.cloudflarestorage.com`,
+      endpoint: resolvedR2Endpoint!,
       forcePathStyle: true,
       credentials: { accessKeyId: r2AccessKeyId!, secretAccessKey: r2SecretAccessKey! },
     })
