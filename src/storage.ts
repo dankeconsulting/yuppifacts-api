@@ -18,6 +18,17 @@ const r2Values = [r2AccountId, r2AccessKeyId, r2SecretAccessKey, r2Bucket];
 const isR2Configured = r2Values.every(Boolean);
 const hasPartialR2Configuration = r2Values.some(Boolean) && !isR2Configured;
 
+// Diagnostic only: report whether each required configuration value was supplied,
+// never its value.  This makes a deployment misconfiguration observable without
+// exposing a credential in logs.
+export const r2ConfigurationStatus = {
+  accountId: Boolean(r2AccountId),
+  accessKeyId: Boolean(r2AccessKeyId),
+  secretAccessKey: Boolean(r2SecretAccessKey),
+  bucket: Boolean(r2Bucket),
+  configured: isR2Configured,
+};
+
 const r2Client = isR2Configured
   ? new S3Client({
       region: "auto",

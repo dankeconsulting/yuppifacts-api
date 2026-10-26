@@ -5,7 +5,7 @@ import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { z, ZodError } from "zod";
 import { ApiError, createAccount, createAccountInput, createContractingSession, createSessionInput, getContractingSession, issueOtp, issueOtpInput, listPlans, updateContractingSessionSelection, updateSessionSelectionInput, verifyOtp, verifyOtpInput } from "./contracting.js";
-import { createUploadUrl, verifyObjectStorageConnection } from "./storage.js";
+import { createUploadUrl, r2ConfigurationStatus, verifyObjectStorageConnection } from "./storage.js";
 import { avatarConfirmInput, avatarUploadInput, confirmAvatarUpload, createAvatarUpload, getAvatar, removeAvatar } from "./profileAssets.js";
 import { createPromotionVoucher, createPromotionVoucherInput, listPromotionVoucherReviews, promotionVoucherReviewsInput, reviewPromotionVoucher, reviewPromotionVoucherInput, submitPromotionVoucher, submitPromotionVoucherInput } from "./promotionVouchers.js";
 import { getPromotionConfig, promotionConfigInput, savePromotionConfig } from "./promotionConfig.js";
@@ -138,6 +138,7 @@ const port = Number(process.env.PORT ?? 10000);
 console.info(`YuppiFacts Node.js runtime ${process.version}`);
 app.listen(port, () => {
   console.info(`YuppiFacts API ready on ${port}`);
+  console.info("Cloudflare R2 configuration status", r2ConfigurationStatus);
   void verifyObjectStorageConnection()
     .then(({ provider, bucket }) => console.info("Object storage connection verified", { provider, bucket }))
     .catch((error: unknown) => console.error("Object storage connection could not be verified", { message: error instanceof Error ? error.message : "Unknown error" }));
