@@ -5,7 +5,7 @@ import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { z, ZodError } from "zod";
 import { ApiError, createAccount, createAccountInput, createContractingSession, createSessionInput, getContractingSession, issueOtp, issueOtpInput, listPlans, updateContractingSessionSelection, updateSessionSelectionInput, verifyOtp, verifyOtpInput } from "./contracting.js";
-import { createUploadUrl } from "./storage.js";
+import { createUploadUrl, verifyObjectStorageConnection } from "./storage.js";
 import { createPromotionVoucher, createPromotionVoucherInput, listPromotionVoucherReviews, promotionVoucherReviewsInput, reviewPromotionVoucher, reviewPromotionVoucherInput, submitPromotionVoucher, submitPromotionVoucherInput } from "./promotionVouchers.js";
 import { getPromotionConfig, promotionConfigInput, savePromotionConfig } from "./promotionConfig.js";
 import { cancelPromotionContract, confirmPromotionTicketAccount, createPromotionContract, createPromotionContractInput, getPromotionResume, promotionAccessInput, promotionPaymentStatus, promotionTicketAccountInput } from "./promotionContracts.js";
@@ -131,4 +131,10 @@ app.post("/v1/admin/promotion-vouchers/:id/review", otpLimiter, async (request, 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => { if (error instanceof ApiError) return response.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}) }); if (error instanceof ZodError) return response.status(400).json({ error: "Datos inválidos", details: error.flatten() }); console.error(error); return response.status(500).json({ error: "Error interno" }); });
 const port = Number(process.env.PORT ?? 10000);
 console.info(`YuppiFacts Node.js runtime ${process.version}`);
-app.listen(port, () => { console.info(`YuppiFacts API ready on ${port}`); const runPromotionEmails=()=>{void retryFailedPromotionEmails().catch((error)=>console.error("Could not retry promotion emails",error));void deliverDuePromotionPaymentReminders().catch((error)=>console.error("Could not deliver promotion reminders",error));};runPromotionEmails();setInterval(runPromotionEmails,5*60*1000).unref(); });
+app.listen(port, () => {
+  console.info(`YuppiFacts API ready on ${port}`);
+  void verifyObjectStorageConnection()
+    .then(({ provider, bucket }) => console.info("Object storage connection verified", { provider, bucket }))
+    .catch((error: unknown) => console.error("Object storage connection could not be verified", { message: error instanceof Error ? error.message : "Unknown error" }));
+  const runPromotionEmails=()=>{void retryFailedPromotionEmails().catch((error)=>console.error("Could not retry promotion emails",error));void deliverDuePromotionPaymentReminders().catch((error)=>console.error("Could not deliver promotion reminders",error));};runPromotionEmails();setInterval(runPromotionEmails,5*60*1000).unref();
+});
