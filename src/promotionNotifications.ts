@@ -7,7 +7,7 @@ const senderName = "YuppiFacts AI® Notificaciones";
 const replyTo = process.env.PROMO_REPLY_TO_EMAIL ?? "promo@yuppifacts.com";
 const brandName = "YuppiFacts AI®";
 const brandIsoUrl = "https://yuppifacts.com/brand/yuppifacts-email-iso-transparent.png";
-const emailBrandHeader = `<table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="padding:0 11px 0 0"><img src="${brandIsoUrl}" width="36" height="36" alt="YuppiFacts AI®" style="display:block;border:0;outline:none;text-decoration:none" /></td><td style="font-size:24px;line-height:1;font-weight:800;letter-spacing:-.8px;color:#1a2030;vertical-align:middle">YuppiFacts AI<sup style="font-size:10px;line-height:0">®</sup></td></tr></table>`;
+const emailBrandHeader = `<table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="padding:0 11px 0 0"><img src="${brandIsoUrl}" width="24" height="24" alt="YuppiFacts AI®" style="display:block;width:24px;height:24px;border:0;outline:none;text-decoration:none" /></td><td style="font-size:24px;line-height:1;font-weight:800;letter-spacing:-.8px;color:#1a2030;vertical-align:middle">YuppiFacts AI<sup style="font-size:10px;line-height:0">®</sup></td></tr></table>`;
 type Template = "contract_received" | "voucher_received" | "payment_verified" | "advisor_assigned" | "panel_access" | "payment_reminder";
 type OutboxRow = { id:string; recipient:string; reply_to:string; template:Template; payload:Record<string,string>; attempts:number };
 

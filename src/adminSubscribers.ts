@@ -4,6 +4,7 @@ import { query, transaction } from "./db.js";
 import { createPromotionVoucherViewUrl, deletePromotionVoucherObjects, PromotionVoucherDeletionError } from "./storage.js";
 import { deliverPromotionEmail, queuePromotionEmail } from "./promotionNotifications.js";
 import { logSubscriberActivity } from "./subscriberActivity.js";
+import { verifySecret } from "./security.js";
 
 export const subscriberStageInput = z.object({ stage: z.enum(["new", "review", "active"]) });
 export const subscriberIdInput = z.object({ id: z.string().uuid() });
@@ -37,6 +38,12 @@ export async function getAdminSubscriber(id:string) {
   const result = await query<SubscriberRow>(`${base} WHERE contract.id=$1`,[id]);
   if(!result.rows[0]) throw new ApiError(404,"No encontramos este suscriptor.");
   return { subscriber:serialize(result.rows[0]) };
+}
+export async function verifyAdminSubscriberPin(id:string,pin:string) {
+  const result=await query<{pin_hash:string|null}>("SELECT pin_hash FROM promotion_contracts WHERE id=$1",[id]);
+  const pinHash=result.rows[0]?.pin_hash;
+  if(!pinHash) throw new ApiError(409,"Este suscriptor aún no tiene un PIN disponible para validar.");
+  return { valid:await verifySecret(pin,pinHash) };
 }
 export async function getAdminSubscriberVoucherUrl(id:string) {
   const result=await query<{storage_key:string|null}>(
