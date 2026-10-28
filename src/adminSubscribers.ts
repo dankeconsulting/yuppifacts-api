@@ -31,7 +31,7 @@ export async function listAdminSubscribers(stage:z.infer<typeof subscriberStageI
   // PIN. They intentionally stay visible in "Usuarios nuevos" so a master
   // administrator can review and remove them through the protected flow.
   const where = stage === "new" ? "(contract.lifecycle_status='voucher_submitted' OR contract.user_id IS NULL)" : stage === "review" ? "contract.lifecycle_status='payment_verified'" : "contract.lifecycle_status IN ('approved','active') AND user_record.account_status='active'";
-  const result = await query<SubscriberRow>(`${base} WHERE ${where} ORDER BY contract.created_at DESC`);
+  const result = await query<SubscriberRow>(`${base} WHERE ${where} ORDER BY contract.created_at ASC`);
   return { subscribers: result.rows.map(serialize) };
 }
 export async function getAdminSubscriber(id:string) {
@@ -202,6 +202,6 @@ export async function listRecentAdminSubscribers() {
   // used by "Usuarios nuevos". Keeping one source prevents records from
   // disappearing from the dashboard while they remain pending there.
   const newSubscriber = "(contract.lifecycle_status='voucher_submitted' OR contract.user_id IS NULL)";
-  const result = await query<SubscriberRow>(`${base} WHERE ${newSubscriber} ORDER BY contract.created_at DESC`);
+  const result = await query<SubscriberRow>(`${base} WHERE ${newSubscriber} ORDER BY contract.created_at ASC`);
   return { subscribers: result.rows.map(serialize) };
 }
