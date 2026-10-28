@@ -144,6 +144,28 @@ export async function deletePrivateObject(key: string) {
   await storage.client.send(new DeleteObjectsCommand({ Bucket: storage.bucket, Delete: { Objects: [{ Key: key }], Quiet: true } }));
 }
 
+export async function deletePrivateObjects(keys: string[]) {
+  const groups = new Map<StorageProvider, string[]>();
+  for (const key of new Set(keys.filter(Boolean))) {
+    const provider: StorageProvider = key.startsWith("r2/") ? "cloudflare-r2" : "aws-s3";
+    groups.set(provider, [...(groups.get(provider) ?? []), key]);
+  }
+  for (const [provider, providerKeys] of groups) {
+    const storage = provider === "cloudflare-r2" ? requireR2Configuration() : storageForKey(providerKeys[0]);
+    for (let offset = 0; offset < providerKeys.length; offset += 1000) {
+      const response = await storage.client.send(new DeleteObjectsCommand({
+        Bucket: storage.bucket,
+        Delete: { Objects: providerKeys.slice(offset, offset + 1000).map((key) => ({ Key: key })), Quiet: true },
+      }));
+      if (response.Errors?.length) {
+        const codes = response.Errors.map((error) => error.Code ?? "UnknownError");
+        console.error("Private object deletion rejected by object storage", { provider, codes });
+        throw new PromotionVoucherDeletionError(codes);
+      }
+    }
+  }
+}
+
 export async function createPromotionVoucherUploadUrl(input: { voucherId: string; filename: string; contentType: SupportedContentType }) {
   const storage = storageForNewFile();
   const safeName=input.filename.replace(/[^a-zA-Z0-9._-]/g,"_");
@@ -176,23 +198,5 @@ export async function createPromotionVoucherViewUrl(key:string) {
 }
 
 export async function deletePromotionVoucherObjects(keys: string[]) {
-  const groups = new Map<StorageProvider, string[]>();
-  for (const key of keys) {
-    const provider: StorageProvider = key.startsWith("r2/") ? "cloudflare-r2" : "aws-s3";
-    groups.set(provider, [...(groups.get(provider) ?? []), key]);
-  }
-  for (const [provider, providerKeys] of groups) {
-    const storage = provider === "cloudflare-r2" ? requireR2Configuration() : storageForKey(providerKeys[0]);
-    for (let offset = 0; offset < providerKeys.length; offset += 1000) {
-      const response = await storage.client.send(new DeleteObjectsCommand({
-        Bucket: storage.bucket,
-        Delete: { Objects: providerKeys.slice(offset, offset + 1000).map((key) => ({ Key: key })), Quiet: true },
-      }));
-      if (response.Errors?.length) {
-        const codes=response.Errors.map(error=>error.Code ?? "UnknownError");
-        console.error("Promotion voucher deletion rejected by object storage", { provider, codes });
-        throw new PromotionVoucherDeletionError(codes);
-      }
-    }
-  }
+  await deletePrivateObjects(keys);
 }

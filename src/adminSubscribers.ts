@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ApiError } from "./contracting.js";
 import { query, transaction } from "./db.js";
-import { createPromotionVoucherViewUrl, deletePromotionVoucherObjects, PromotionVoucherDeletionError } from "./storage.js";
+import { createPromotionVoucherViewUrl, deletePrivateObjects, deletePromotionVoucherObjects, PromotionVoucherDeletionError } from "./storage.js";
 import { deliverPromotionEmail, queuePromotionEmail } from "./promotionNotifications.js";
 import { logSubscriberActivity } from "./subscriberActivity.js";
 import { verifySecret } from "./security.js";
@@ -121,15 +121,39 @@ export async function deleteAdminSubscribers(ids:string[], confirmationIds?:numb
       throw new ApiError(400,"Los IDs de confirmación no corresponden exactamente a los registros seleccionados.");
     }
   }
-  const records = await query<{contract_id:string; storage_key:string|null}>(
-    `SELECT contract.id AS contract_id, voucher.storage_key
+  const records = await query<{contract_id:string; user_id:string|null; storage_key:string|null; avatar_object_key:string|null}>(
+    `SELECT contract.id AS contract_id, contract.user_id, voucher.storage_key, user_record.avatar_object_key
        FROM promotion_contracts contract
+       LEFT JOIN users user_record ON user_record.id=contract.user_id
        LEFT JOIN promotion_vouchers voucher ON voucher.promotion_contract_id=contract.id
       WHERE contract.id = ANY($1::uuid[])`, [ids],
   );
   if (new Set(records.rows.map(record => record.contract_id)).size !== ids.length) throw new ApiError(404,"No encontramos uno o más registros.");
+  const userIds=[...new Set(records.rows.flatMap(record=>record.user_id?[record.user_id]:[]))];
+  const exclusiveOrganizations = userIds.length ? await query<{id:string}>(
+    `SELECT membership.organization_id AS id
+       FROM organization_memberships membership
+      WHERE membership.user_id = ANY($1::uuid[])
+        AND NOT EXISTS (
+          SELECT 1 FROM organization_memberships other_member
+           WHERE other_member.organization_id = membership.organization_id
+             AND other_member.user_id <> membership.user_id
+        )`,
+    [userIds],
+  ) : { rows: [] };
+  const organizationIds=exclusiveOrganizations.rows.map(organization=>organization.id);
+  const organizationAssets=organizationIds.length ? await query<{storage_key:string|null}>(
+    `SELECT storage_key FROM documents WHERE organization_id = ANY($1::uuid[])
+     UNION ALL
+     SELECT source_key AS storage_key FROM invoice_requests WHERE organization_id = ANY($1::uuid[]) AND source_key IS NOT NULL`,
+    [organizationIds],
+  ) : { rows: [] };
+  const storageKeys=[...new Set([
+    ...records.rows.flatMap(record=>[record.storage_key,record.avatar_object_key].filter((key):key is string=>Boolean(key))),
+    ...organizationAssets.rows.flatMap(record=>record.storage_key?[record.storage_key]:[]),
+  ])];
   try {
-    await deletePromotionVoucherObjects([...new Set(records.rows.flatMap(record => record.storage_key ? [record.storage_key] : []))]);
+    await deletePrivateObjects(storageKeys);
   } catch (error) {
     if (error instanceof PromotionVoucherDeletionError) {
       throw new ApiError(502,"No se eliminó ningún registro: el almacenamiento de comprobantes rechazó la operación. Revisa los permisos de eliminación de vouchers.","VOUCHER_STORAGE_DELETE_FAILED");
@@ -140,7 +164,6 @@ export async function deleteAdminSubscribers(ids:string[], confirmationIds?:numb
     const contracts=await client.query<{id:string;user_id:string|null;platform_role:string|null}>("SELECT contract.id,contract.user_id,user_record.platform_role FROM promotion_contracts contract LEFT JOIN users user_record ON user_record.id=contract.user_id WHERE contract.id = ANY($1::uuid[]) FOR UPDATE OF contract",[ids]);
     if(contracts.rows.length !== ids.length) throw new ApiError(404,"No encontramos uno o más registros.");
     if(contracts.rows.some(record=>record.platform_role === "master_admin")) throw new ApiError(403,"La cuenta administradora maestra no puede eliminarse.");
-    const userIds=[...new Set(contracts.rows.flatMap(record=>record.user_id?[record.user_id]:[]))];
     await client.query(
       `DELETE FROM promotion_notification_outbox
         WHERE promotion_contract_id = ANY($1::uuid[])
@@ -149,8 +172,9 @@ export async function deleteAdminSubscribers(ids:string[], confirmationIds?:numb
     );
     await client.query("DELETE FROM promotion_vouchers WHERE promotion_contract_id = ANY($1::uuid[])",[ids]);
     await client.query("DELETE FROM promotion_contracts WHERE id = ANY($1::uuid[])",[ids]);
+    if(organizationIds.length) await client.query("DELETE FROM organizations WHERE id = ANY($1::uuid[])",[organizationIds]);
     if(userIds.length) await client.query("DELETE FROM users WHERE id = ANY($1::uuid[]) AND platform_role <> 'master_admin'",[userIds]);
-    return { deleted:true, deletedContracts:ids.length, deletedUsers:userIds.length };
+    return { deleted:true, deletedContracts:ids.length, deletedUsers:userIds.length, deletedOrganizations:organizationIds.length, deletedStorageObjects:storageKeys.length };
   });
 }
 

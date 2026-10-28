@@ -11,11 +11,12 @@ export const completeLoginInput = z.object({ challengeId: z.string().uuid(), ver
 export const changePinInput = z.object({ currentPin: z.string().regex(/^\d{4}$/), pin: z.string().regex(/^\d{4}$/), pinConfirmation: z.string().regex(/^\d{4}$/) }).refine((value) => value.pin === value.pinConfirmation, { path: ["pinConfirmation"], message: "Los PIN no coinciden." });
 export const adminPasswordLoginInput = z.object({ username: z.string().trim().min(3).max(254), password: z.string().min(12).max(128) });
 
-type UserRow = { id: string; full_name: string; username: string | null; phone_e164: string; password_hash: string | null; pin_hash: string; platform_role: string; account_status: string; is_online: boolean; avatar_object_key?: string | null };
+type UserRow = { id: string; full_name: string; username: string | null; phone_e164: string; password_hash: string | null; pin_hash: string; platform_role: string; account_status: string; is_online: boolean; subscription_mode?: string | null; avatar_object_key?: string | null };
 type ChallengeRow = { id: string; user_id: string; code_hash: string; verification_token_hash: string | null; expires_at: Date; attempts: number; max_attempts: number; verified_at: Date | null; completed_at: Date | null; invalidated_at: Date | null };
 
-function accountSummary(user: Pick<UserRow, "full_name" | "username" | "phone_e164" | "platform_role" | "account_status" | "is_online">) {
-  return { fullName: user.full_name, username: user.username, phoneE164: user.phone_e164, role: user.platform_role, accountStatus: user.account_status, online: user.is_online };
+function accountSummary(user: Pick<UserRow, "full_name" | "username" | "phone_e164" | "platform_role" | "account_status" | "is_online" | "subscription_mode">) {
+  const profile = ["individual", "independent_accountant", "accounting_firm", "company", "corporate"].includes(user.subscription_mode ?? "") ? user.subscription_mode : "individual";
+  return { fullName: user.full_name, username: user.username, phoneE164: user.phone_e164, role: user.platform_role, accountStatus: user.account_status, online: user.is_online, profile };
 }
 
 function canUsePanel(user: UserRow) {
@@ -88,7 +89,7 @@ export async function completeLogin(input: z.infer<typeof completeLoginInput>, m
     const challengeResult = await client.query<ChallengeRow>("SELECT id, user_id, code_hash, verification_token_hash, expires_at, attempts, max_attempts, verified_at, completed_at, invalidated_at FROM access_challenges WHERE id = $1 FOR UPDATE", [input.challengeId]);
     const challenge = challengeResult.rows[0];
     if (!challenge || challenge.invalidated_at || challenge.completed_at || !challenge.verified_at || challenge.expires_at <= new Date() || !challenge.verification_token_hash || !safeEqualSecret(hashOpaqueToken(input.verificationToken), challenge.verification_token_hash)) throw new ApiError(401, "La verificación ya no es válida. Solicita un código nuevo.");
-    const userResult = await client.query<UserRow>("SELECT id, full_name, username, phone_e164, password_hash, pin_hash, platform_role, account_status, is_online FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", [challenge.user_id]);
+    const userResult = await client.query<UserRow>("SELECT u.id, u.full_name, u.username, u.phone_e164, u.password_hash, u.pin_hash, u.platform_role, u.account_status, u.is_online, contract.plan_snapshot->>'mode' AS subscription_mode FROM users u LEFT JOIN LATERAL (SELECT plan_snapshot FROM promotion_contracts WHERE user_id=u.id ORDER BY created_at DESC LIMIT 1) contract ON true WHERE u.id = $1 AND u.deleted_at IS NULL FOR UPDATE OF u", [challenge.user_id]);
     const user = userResult.rows[0];
     if (!user || !canUsePanel(user)) throw new ApiError(403, "Tu cuenta no está disponible para entrar.", "ACCOUNT_NOT_READY");
     if (!(await verifySecret(input.pin, user.pin_hash))) throw new ApiError(401, "El PIN no coincide.");
@@ -116,8 +117,9 @@ export async function loginAdministrator(input: z.infer<typeof adminPasswordLogi
 
 export async function getAccessSession(token: string) {
   const result = await query<UserRow>(
-    `SELECT u.id, u.full_name, u.username, u.phone_e164, u.password_hash, u.pin_hash, u.platform_role, u.account_status, u.is_online
+    `SELECT u.id, u.full_name, u.username, u.phone_e164, u.password_hash, u.pin_hash, u.platform_role, u.account_status, u.is_online, contract.plan_snapshot->>'mode' AS subscription_mode
        FROM application_sessions s JOIN users u ON u.id = s.user_id
+       LEFT JOIN LATERAL (SELECT plan_snapshot FROM promotion_contracts WHERE user_id=u.id ORDER BY created_at DESC LIMIT 1) contract ON true
       WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.deleted_at IS NULL
       LIMIT 1`,
     [hashOpaqueToken(token)],
