@@ -117,6 +117,7 @@ test('login preserves OTP expiry, PIN rejection and session token hashing',async
     if(sql.includes('FROM access_challenges'))return result([challenge]);
     if(sql.includes('FROM users'))return result([user]);
     if(sql.includes('INSERT INTO application_sessions'))return result([{expires_at:new Date(Date.now()+12*60*60*1000)}]);
+    if(sql.includes('INSERT INTO subscriber_activity_log'))return result();
     if(sql.startsWith('UPDATE access_challenges')||sql.startsWith('UPDATE users'))return result();
     throw new Error('Unexpected query in login fixture');
   });

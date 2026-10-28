@@ -32,6 +32,15 @@ async function createApplicationSession(client: PoolClient, user: UserRow, metad
     [user.id, hashOpaqueToken(token), metadata.ipHash, metadata.userAgent?.slice(0, 500) ?? null],
   );
   await client.query("UPDATE users SET last_login_at = now() WHERE id = $1", [user.id]);
+  await client.query(
+    `INSERT INTO subscriber_activity_log (promotion_contract_id,actor_user_id,action,title,detail)
+     SELECT id,$1,'panel_login','Acceso al panel','Se inició una sesión en el panel de YuppiFacts.'
+       FROM promotion_contracts
+      WHERE user_id=$1
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [user.id],
+  );
   return { accessToken: token, expiresAt: session.rows[0].expires_at.toISOString(), account: accountSummary(user) };
 }
 
