@@ -38,19 +38,22 @@ export async function listAccountActivity(userId: string) {
 }
 
 /** Master-administrator audit feed. It intentionally returns only persisted events. */
-export async function listAdminActivity() {
-  const result = await query<{id:string;action:string;title:string;detail:string|null;incident_code:string|null;incident_name:string|null;actor_name:string|null;contract_id:string|null;admin_reference:string|null;subscriber_name:string|null;created_at:Date}>(
+export async function listAdminActivity(search = "") {
+  const result = await query<{id:string;action:string;title:string;detail:string|null;incident_code:string|null;incident_name:string|null;actor_name:string|null;contract_id:string|null;admin_reference:string|null;subscriber_name:string|null;subscriber_phone:string|null;created_at:Date}>(
     `SELECT log.id,log.action,log.title,log.detail,
             incident.code AS incident_code,incident.name AS incident_name,
             actor.full_name AS actor_name,
-            contract.id AS contract_id,contract.admin_reference,contract.full_name AS subscriber_name,
+            contract.id AS contract_id,contract.admin_reference,contract.full_name AS subscriber_name,subscriber.phone_e164 AS subscriber_phone,
             log.created_at
        FROM subscriber_activity_log log
        LEFT JOIN subscriber_incidents incident ON incident.id=log.incident_id
        LEFT JOIN users actor ON actor.id=log.actor_user_id
        LEFT JOIN promotion_contracts contract ON contract.id=log.promotion_contract_id
+       LEFT JOIN users subscriber ON subscriber.id=contract.user_id
+      WHERE ($1 = '' OR contract.full_name ILIKE '%' || $1 || '%' OR contract.admin_reference ILIKE '%' || $1 || '%' OR subscriber.phone_e164 ILIKE '%' || $1 || '%' OR actor.full_name ILIKE '%' || $1 || '%')
       ORDER BY log.created_at DESC
       LIMIT 500`,
+    [search],
   );
   return { activities: result.rows.map(row => ({
     id: row.id,
@@ -59,7 +62,7 @@ export async function listAdminActivity() {
     detail: row.detail,
     incident: row.incident_code ? { code: row.incident_code, name: row.incident_name } : null,
     actorName: row.actor_name,
-    subscriber: row.contract_id ? { id: row.contract_id, reference: row.admin_reference, fullName: row.subscriber_name } : null,
+    subscriber: row.contract_id ? { id: row.contract_id, reference: row.admin_reference, fullName: row.subscriber_name, phone: row.subscriber_phone, state: null, city: null } : null,
     createdAt: row.created_at.toISOString(),
   })) };
 }
