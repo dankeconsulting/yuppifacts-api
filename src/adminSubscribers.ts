@@ -156,17 +156,25 @@ export async function moveSubscriberToReview(id:string, actorUserId?:string) {
   return subscriber;
 }
 export async function approveSubscriber(id:string, actorUserId?:string) {
-  return transaction(async client => {
-    const result=await client.query<{user_id:string|null}>("SELECT user_id FROM promotion_contracts WHERE id=$1 AND lifecycle_status='payment_verified' FOR UPDATE",[id]);
-    if(!result.rows[0]?.user_id) throw new ApiError(409,"Esta cuenta debe estar en revisión antes de activarla.");
-    await client.query("UPDATE users SET account_status='active',is_online=false WHERE id=$1",[result.rows[0].user_id]);
+  await transaction(async client => {
+    const result=await client.query<{user_id:string|null;lifecycle_status:string}>("SELECT user_id,lifecycle_status FROM promotion_contracts WHERE id=$1 FOR UPDATE",[id]);
+    const contract=result.rows[0];
+    if(!contract?.user_id) throw new ApiError(404,"No encontramos la cuenta que deseas activar.");
+    // The action is idempotent: a repeated click after a successful activation
+    // must return the current record rather than reporting a stale review error.
+    if(contract.lifecycle_status==="approved"||contract.lifecycle_status==="active") return false;
+    if(contract.lifecycle_status!=="payment_verified") throw new ApiError(409,"Esta cuenta debe estar en revisión antes de activarla.");
+    await client.query("UPDATE users SET account_status='active',is_online=false WHERE id=$1",[contract.user_id]);
     await client.query("UPDATE promotion_contracts SET lifecycle_status='approved' WHERE id=$1",[id]);
     await logSubscriberActivity(client,{contractId:id,actorUserId,action:"account_approved",title:"Cuenta activada",detail:"La cuenta pasó a Usuarios y permanece fuera de línea."});
-    return getAdminSubscriber(id);
+    return true;
   });
+  // Read only after the transaction commits. Reading from another pooled
+  // connection inside the transaction caused the activation to wait/retry.
+  return getAdminSubscriber(id);
 }
 export async function setSubscriberOnline(id:string,online:boolean, options:{incidentId?:string;detail?:string;actorUserId?:string}={}) {
-  const subscriber = await transaction(async client => {
+  await transaction(async client => {
     const result=await client.query<{user_id:string|null}>("SELECT user_id FROM promotion_contracts WHERE id=$1 AND lifecycle_status IN ('approved','active') FOR UPDATE",[id]);
     if(!result.rows[0]?.user_id) throw new ApiError(409,"Esta cuenta aún no está lista para ponerse en línea.");
     if(!online){
@@ -177,8 +185,10 @@ export async function setSubscriberOnline(id:string,online:boolean, options:{inc
     await client.query("UPDATE users SET account_status=$2,is_online=$3 WHERE id=$1",[result.rows[0].user_id,online ? "active" : "pending_review",online]);
     await client.query(online ? "UPDATE promotion_contracts SET lifecycle_status='active',subscription_started_at=COALESCE(subscription_started_at,now()),renewal_at=COALESCE(renewal_at,now() + CASE billing_period WHEN 'monthly' THEN interval '1 month' WHEN 'quarterly' THEN interval '3 months' WHEN 'semiannual' THEN interval '6 months' ELSE interval '1 year' END) WHERE id=$1" : "UPDATE promotion_contracts SET lifecycle_status='approved' WHERE id=$1",[id]);
     await logSubscriberActivity(client,{contractId:id,actorUserId:options.actorUserId,incidentId:options.incidentId,action:online?"account_online":"account_offline",title:online?"Cuenta puesta en línea":"Cuenta puesta fuera de línea",detail:online?"Se habilitó el acceso operativo e inició la vigencia de la membresía.":options.detail||"El acceso operativo fue puesto fuera de línea."});
-    return getAdminSubscriber(id);
   });
+  // Do not query through a second connection until the locked transition has
+  // committed. This keeps the action responsive on its first click.
+  const subscriber = await getAdminSubscriber(id);
   if (online) {
     const emailId = await queuePromotionEmail({ promotionId:id, recipient:subscriber.subscriber.email, template:"panel_access", payload:{ fullName:subscriber.subscriber.fullName } });
     if (emailId) void deliverPromotionEmail(emailId);
