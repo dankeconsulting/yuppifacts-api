@@ -22,7 +22,7 @@ import { deliverDuePromotionPaymentReminders, retryFailedPromotionEmails } from 
 import { approveSubscriber, deleteAdminSubscribers, deleteSubscribersInput, deleteUnlinkedPromotionTestData, getAdminSubscriber, getAdminSubscriberVoucherUrl, listAdminSubscribers, listRecentAdminSubscribers, moveSubscriberToReview, onlineInput, setSubscriberOnline, subscriberIdInput, subscriberStageInput, verifyAdminSubscriberPin } from "./adminSubscribers.js";
 import { createLandingPlan, deleteLandingPlan, landingPlanCreateInput, landingPlanIdInput, landingPlanOrderInput, landingPlanUpdateInput, listLandingPlans, reorderLandingPlans, updateLandingPlan } from "./landingPlans.js";
 import { deleteTaxRate, listTaxRates, taxCountryCode, taxRateUpdateInput, updateTaxRate } from "./taxes.js";
-import { listAdminActivity, listSubscriberActivity } from "./subscriberActivity.js";
+import { listAccountActivity, listAdminActivity, listSubscriberActivity } from "./subscriberActivity.js";
 import { createRegularPlan, deleteRegularPlan, listRegularPlans, regularPlanCreateInput, regularPlanIdInput, regularPlanOrderInput, regularPlanUpdateInput, reorderRegularPlans, updateRegularPlan } from "./regularPlans.js";
 
 const origins = [...new Set([...(process.env.WEB_ORIGIN ?? "").split(",").map((value) => value.trim()).filter(Boolean), "https://tickets.yuppifacts.com", "https://promo.yuppifacts.com", "https://admin.yuppifacts.com"])];
@@ -114,6 +114,7 @@ app.get("/v1/account/avatar", async (request, response, next) => { try { const u
 app.post("/v1/account/avatar/upload-url", async (request, response, next) => { try { const user = await requireApplicationUser(applicationToken(request)); response.status(201).json(await createAvatarUpload(user.id, avatarUploadInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/account/avatar/confirm", async (request, response, next) => { try { const user = await requireApplicationUser(applicationToken(request)); response.json(await confirmAvatarUpload(user.id, avatarConfirmInput.parse(request.body))); } catch (error) { next(error); } });
 app.delete("/v1/account/avatar", async (request, response, next) => { try { const user = await requireApplicationUser(applicationToken(request)); await removeAvatar(user.id); response.status(204).end(); } catch (error) { next(error); } });
+app.get("/v1/account/activity", async (request, response, next) => { try { const user = await requireApplicationUser(applicationToken(request)); response.json(await listAccountActivity(user.id)); } catch (error) { next(error); } });
 app.post("/v1/promotion-vouchers", voucherLimiter, async (request, response, next) => { try { response.status(201).json(await createPromotionVoucher(createPromotionVoucherInput.parse(request.body))); } catch (error) { next(error); } });
 app.post("/v1/promotion-vouchers/:id/submit", voucherLimiter, async (request, response, next) => { try { response.json(await submitPromotionVoucher(submitPromotionVoucherInput.parse({ id: request.params.id }))); } catch (error) { next(error); } });
 app.get("/v1/admin/dashboard/recent-subscribers", adminLimiter, async (request, response, next) => { try { await requireMasterAdministrator(applicationToken(request)); response.json(await listRecentAdminSubscribers()); } catch (error) { next(error); } });
