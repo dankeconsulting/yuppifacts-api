@@ -22,7 +22,8 @@ function profileLabel(mode:string|null, planId:string) {
 }
 function serialize(row:SubscriberRow) {
   const isTemporary = !row.user_id;
-  return { id:row.id, userId:row.user_id, userNumber:row.user_number, recordNumber:row.user_number ?? row.admin_reference, isTemporary, role:isTemporary ? "Registro temporal" : row.platform_role === "master_admin" ? "Administrador maestro" : "Suscriptor", fullName:row.full_name, email:row.email, phone:row.phone_e164, countryCode:row.country_code ?? "MX", state:row.state_name, city:row.city_name, profile:profileLabel(row.mode,row.plan_id), planId:row.plan_id, billingPeriod:row.billing_period, quotedAmountCents:row.quoted_amount_cents, subscriptionTag:row.subscription_tag, registeredAt:row.created_at.toISOString(), renewalAt:row.renewal_at?.toISOString() ?? null, voucher:{ id:row.voucher_id, filename:row.voucher_filename, storageKey:row.voucher_key }, lifecycleStatus:row.lifecycle_status, accountStatus:row.account_status, online:Boolean(row.is_online) };
+  const profileKey=row.mode ?? row.plan_id;
+  return { id:row.id, userId:row.user_id, userNumber:row.user_number, recordNumber:row.user_number ?? row.admin_reference, isTemporary, role:isTemporary ? "Registro temporal" : row.platform_role === "master_admin" ? "Administrador maestro" : "Suscriptor", fullName:row.full_name, email:row.email, phone:row.phone_e164, countryCode:row.country_code ?? "MX", state:row.state_name, city:row.city_name, profile:profileLabel(row.mode,row.plan_id), profileKey, planId:row.plan_id, billingPeriod:row.billing_period, quotedAmountCents:row.quoted_amount_cents, subscriptionTag:row.subscription_tag, registeredAt:row.created_at.toISOString(), renewalAt:row.renewal_at?.toISOString() ?? null, voucher:{ id:row.voucher_id, filename:row.voucher_filename, storageKey:row.voucher_key }, lifecycleStatus:row.lifecycle_status, accountStatus:row.account_status, online:Boolean(row.is_online) };
 }
 const base = `SELECT contract.id,contract.admin_reference,contract.full_name,contract.email,contract.phone_e164,contract.country_code,contract.state_name,contract.city_name,contract.plan_id,contract.billing_period,contract.quoted_amount_cents,contract.lifecycle_status,contract.subscription_tag,contract.created_at,contract.renewal_at,contract.user_id,user_record.user_number,user_record.platform_role,user_record.account_status,user_record.is_online,contract.plan_snapshot->>'mode' AS mode,voucher.id AS voucher_id,voucher.original_filename AS voucher_filename,voucher.storage_key AS voucher_key FROM promotion_contracts contract LEFT JOIN users user_record ON user_record.id=contract.user_id LEFT JOIN LATERAL (SELECT id,original_filename,storage_key FROM promotion_vouchers WHERE promotion_contract_id=contract.id ORDER BY submitted_at DESC NULLS LAST LIMIT 1) voucher ON true`;
 
@@ -38,6 +39,76 @@ export async function getAdminSubscriber(id:string) {
   const result = await query<SubscriberRow>(`${base} WHERE contract.id=$1`,[id]);
   if(!result.rows[0]) throw new ApiError(404,"No encontramos este suscriptor.");
   return { subscriber:serialize(result.rows[0]) };
+}
+
+type OperationContractRow={id:string;user_id:string|null;full_name:string;email:string;phone_e164:string;mode:string|null;plan_snapshot:{seats?:unknown}|null};
+type MembershipRow={id:string;full_name:string|null;email:string;phone_e164:string|null;role:string;avatar_object_key:string|null};
+
+function approvedSeatCount(seats:unknown,mode:string|null) {
+  const text=typeof seats==="string"?seats:"";
+  const matches=[...text.matchAll(/(\d+)\s+asientos?/gi)].map(match=>Number(match[1]));
+  if(!matches.length) return mode==="individual"?1:1;
+  if(/por\s+sucursal/i.test(text)&&/sucursales?/i.test(text)) return matches.reduce((total,value)=>total*value,1);
+  return Math.max(...matches);
+}
+
+export async function getAdminSubscriberOperations(id:string) {
+  const contractResult=await query<OperationContractRow>(
+    `SELECT id,user_id,full_name,email,phone_e164,plan_snapshot->>'mode' AS mode,plan_snapshot
+       FROM promotion_contracts WHERE id=$1`,
+    [id],
+  );
+  const contract=contractResult.rows[0];
+  if(!contract) throw new ApiError(404,"No encontramos este suscriptor.");
+  const seatLimit=approvedSeatCount(contract.plan_snapshot?.seats,contract.mode);
+  const organizationResult=contract.user_id ? await query<{id:string;name:string;kind:string}>(
+    `SELECT organization.id,organization.name,organization.kind
+       FROM organizations organization
+       JOIN organization_memberships membership ON membership.organization_id=organization.id
+      WHERE membership.user_id=$1
+      ORDER BY membership.created_at ASC
+      LIMIT 1`,
+    [contract.user_id],
+  ) : {rows:[]};
+  const organization=organizationResult.rows[0]??null;
+  const memberResult=organization ? await query<MembershipRow>(
+    `SELECT user_record.id,user_record.full_name,user_record.email,user_record.phone_e164,membership.role,user_record.avatar_object_key
+       FROM organization_memberships membership
+       JOIN users user_record ON user_record.id=membership.user_id
+      WHERE membership.organization_id=$1
+      ORDER BY CASE membership.role WHEN 'owner' THEN 0 ELSE 1 END,user_record.created_at ASC`,
+    [organization.id],
+  ) : {rows:contract.user_id ? [{id:contract.user_id,full_name:contract.full_name,email:contract.email,phone_e164:contract.phone_e164,role:"owner",avatar_object_key:null}] : []};
+  const members=memberResult.rows;
+  const occupiedSeats=members.length;
+  const seats=Array.from({length:Math.max(seatLimit,occupiedSeats)},(_,index)=>{
+    const member=members[index];
+    return member ? {number:index+1,status:"assigned" as const,userId:member.id,name:member.full_name??"Usuario sin nombre",email:member.email,phone:member.phone_e164,role:member.role,hasAvatar:Boolean(member.avatar_object_key)} : {number:index+1,status:"available" as const,userId:null,name:null,email:null,phone:null,role:null,hasAvatar:false};
+  });
+  const contributorRows=organization ? await query<{id:string;name:string;rfc:string;tickets:number;requests:number;received:number;pending:number;failed:number}>(
+    `SELECT fiscal.id,fiscal.legal_name AS name,fiscal.rfc,
+       0::integer AS tickets,
+       count(request.id)::integer AS requests,
+       count(request.id) FILTER (WHERE request.status='received')::integer AS received,
+       count(request.id) FILTER (WHERE request.status IN ('draft','ready_for_review','submitted'))::integer AS pending,
+       count(request.id) FILTER (WHERE request.status='failed')::integer AS failed
+       FROM fiscal_profiles fiscal
+       LEFT JOIN invoice_requests request ON request.fiscal_profile_id=fiscal.id
+      WHERE fiscal.organization_id=$1
+      GROUP BY fiscal.id,fiscal.legal_name,fiscal.rfc
+      ORDER BY fiscal.created_at ASC`,
+    [organization.id],
+  ) : {rows:[]};
+  const totals=organization ? await query<{tickets:number;requests:number;received:number;pending:number;failed:number;documents:number}>(
+    `SELECT 0::integer AS tickets,
+       (SELECT count(*)::integer FROM invoice_requests WHERE organization_id=$1) AS requests,
+       (SELECT count(*)::integer FROM invoice_requests WHERE organization_id=$1 AND status='received') AS received,
+       (SELECT count(*)::integer FROM invoice_requests WHERE organization_id=$1 AND status IN ('draft','ready_for_review','submitted')) AS pending,
+       (SELECT count(*)::integer FROM invoice_requests WHERE organization_id=$1 AND status='failed') AS failed,
+       (SELECT count(*)::integer FROM documents WHERE organization_id=$1) AS documents`,
+    [organization.id],
+  ) : {rows:[{tickets:0,requests:0,received:0,pending:0,failed:0,documents:0}]};
+  return { organization, planSeats:typeof contract.plan_snapshot?.seats==="string"?contract.plan_snapshot.seats:`${seatLimit} asiento${seatLimit===1?"":"s"}`, approvedSeats:seatLimit, occupiedSeats, availableSeats:Math.max(0,seatLimit-occupiedSeats), seats, contributors:contributorRows.rows, totals:totals.rows[0] };
 }
 export async function verifyAdminSubscriberPin(id:string,pin:string) {
   const result=await query<{pin_hash:string|null}>("SELECT pin_hash FROM promotion_contracts WHERE id=$1",[id]);
