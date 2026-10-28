@@ -126,6 +126,20 @@ export async function createUserAvatarUploadUrl(input: { userId: string; filenam
   };
 }
 
+export async function uploadUserAvatar(input:{userId:string;filename:string;contentType:Extract<SupportedContentType,"image/jpeg"|"image/png"|"image/webp">;bytes:Buffer}) {
+  const storage=storageForNewFile();
+  const safeName=input.filename.replace(/[^a-zA-Z0-9._-]/g,"_");
+  const key=keyForNewFile(`users/${input.userId}/avatar`,safeName);
+  await storage.client.send(new PutObjectCommand({
+    Bucket:storage.bucket,
+    Key:key,
+    ContentType:input.contentType,
+    Metadata:{userId:input.userId,assetType:"avatar"},
+    Body:input.bytes,
+  }));
+  return key;
+}
+
 export async function verifyUserAvatarUpload(input: { key: string; contentType: Extract<SupportedContentType, "image/jpeg" | "image/png" | "image/webp">; byteSize: number }) {
   try {
     const storage = storageForKey(input.key);

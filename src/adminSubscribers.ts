@@ -133,16 +133,26 @@ export async function getAdminSubscriberVoucherUrl(id:string) {
   return { url:await createPromotionVoucherViewUrl(key),expiresIn:300 };
 }
 export async function moveSubscriberToReview(id:string, actorUserId?:string) {
-  const subscriber = await transaction(async client => {
-    const contract=await client.query<{user_id:string|null}>("SELECT user_id FROM promotion_contracts WHERE id=$1 AND lifecycle_status='voucher_submitted' FOR UPDATE",[id]);
+  // Do not read the subscriber through the pool while this transaction holds a
+  // FOR UPDATE lock. That second connection waits for this transaction to
+  // commit, making the validation appear to freeze in the administrator UI.
+  const transitioned = await transaction(async client => {
+    const contract=await client.query<{user_id:string|null;lifecycle_status:string}>("SELECT user_id,lifecycle_status FROM promotion_contracts WHERE id=$1 FOR UPDATE",[id]);
     if(!contract.rows[0]?.user_id) throw new ApiError(409,"El comprobante o la cuenta pendiente no están disponibles.");
+    // A repeated tap after a successful validation is harmless: return the
+    // current subscriber instead of reporting a false failure.
+    if(contract.rows[0].lifecycle_status==="payment_verified") return false;
+    if(contract.rows[0].lifecycle_status!=="voucher_submitted") throw new ApiError(409,"El comprobante o la cuenta pendiente no están disponibles.");
     await client.query("UPDATE promotion_vouchers SET status='verified',reviewed_at=now() WHERE promotion_contract_id=$1 AND status='submitted'",[id]);
     await client.query("UPDATE promotion_contracts SET lifecycle_status='payment_verified' WHERE id=$1",[id]);
     await logSubscriberActivity(client,{contractId:id,actorUserId,action:"payment_verified",title:"Pago validado",detail:"El comprobante fue validado y la cuenta pasó a Usuarios en revisión."});
-    return getAdminSubscriber(id);
+    return true;
   });
-  const emailId = await queuePromotionEmail({ promotionId:id, recipient:subscriber.subscriber.email, template:"payment_verified", payload:{ fullName:subscriber.subscriber.fullName } });
-  if (emailId) void deliverPromotionEmail(emailId);
+  const subscriber=await getAdminSubscriber(id);
+  if(transitioned){
+    const emailId = await queuePromotionEmail({ promotionId:id, recipient:subscriber.subscriber.email, template:"payment_verified", payload:{ fullName:subscriber.subscriber.fullName } });
+    if (emailId) void deliverPromotionEmail(emailId);
+  }
   return subscriber;
 }
 export async function approveSubscriber(id:string, actorUserId?:string) {
