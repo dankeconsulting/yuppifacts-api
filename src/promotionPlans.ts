@@ -6,12 +6,12 @@ import { activeCampaignPlans } from "./promotionCampaigns.js";
 const mode=z.enum(["individual","independent_accountant","accounting_firm","company","corporate"]);
 const billingPeriods=z.array(z.enum(["monthly","quarterly","semiannual","annual"])).min(1).max(4).refine(items=>new Set(items).size===items.length,"No repitas una periodicidad.");
 const planId = z.string().regex(/^[a-z0-9_]{2,80}$/);
-const benefit = z.string().trim().min(2).max(300);
+const benefit = z.string().trim().min(2).max(2000);
 
 export const promotionPlanInput = z.object({
   mode, billingPeriods, name: z.string().trim().min(2).max(120), seats: z.string().trim().min(1).max(180),
   monthlyAmountCents: z.number().int().positive().nullable(), quarterlyAmountCents: z.number().int().positive().nullable(), semiannualAmountCents:z.number().int().positive().nullable(), annualAmountCents:z.number().int().positive().nullable(), regularMonthlyAmountCents: z.number().int().positive().nullable(),
-  benefits: z.array(benefit).min(1).max(30), active: z.boolean(), displayOrder: z.number().int().min(0).max(32000),
+  benefits: z.array(benefit).min(1).max(50), active: z.boolean(), displayOrder: z.number().int().min(0).max(32000),
 });
 export const promotionPlanCreateInput = promotionPlanInput.extend({ id: planId });
 export const promotionPlanUpdateInput = promotionPlanInput.extend({ id: planId });

@@ -170,9 +170,11 @@ export async function deleteAdminSubscribers(ids:string[], confirmationIds?:numb
            OR voucher_id IN (SELECT id FROM promotion_vouchers WHERE promotion_contract_id = ANY($1::uuid[]))`,
       [ids],
     );
+    await client.query("DELETE FROM subscriber_activity_log WHERE promotion_contract_id = ANY($1::uuid[])",[ids]);
     await client.query("DELETE FROM promotion_vouchers WHERE promotion_contract_id = ANY($1::uuid[])",[ids]);
     await client.query("DELETE FROM promotion_contracts WHERE id = ANY($1::uuid[])",[ids]);
     if(organizationIds.length) await client.query("DELETE FROM organizations WHERE id = ANY($1::uuid[])",[organizationIds]);
+    if(userIds.length) await client.query("DELETE FROM contracting_sessions WHERE user_id = ANY($1::uuid[])",[userIds]);
     if(userIds.length) await client.query("DELETE FROM users WHERE id = ANY($1::uuid[]) AND platform_role <> 'master_admin'",[userIds]);
     return { deleted:true, deletedContracts:ids.length, deletedUsers:userIds.length, deletedOrganizations:organizationIds.length, deletedStorageObjects:storageKeys.length };
   });

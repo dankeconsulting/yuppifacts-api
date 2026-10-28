@@ -42,7 +42,8 @@ test('registration, vouchers and plan validation preserve valid data and boundar
   const plan = {id:'independent_accountant',mode:'independent_accountant',billingPeriods:['monthly','quarterly','semiannual','annual'],name:'Fixture plan',seats:'1',monthlyAmountCents:59900,quarterlyAmountCents:161730,semiannualAmountCents:305490,annualAmountCents:575040,regularMonthlyAmountCents:null,benefits:['Fixture benefit'],active:true,displayOrder:1};
   assert.equal(promotionPlanCreateInput.safeParse(plan).success,true);
   assert.equal(promotionPlanCreateInput.safeParse({...plan,billingPeriods:['monthly','monthly']}).success,false);
-  assert.equal(promotionPlanCreateInput.safeParse({...plan,benefits:Array(31).fill('Fixture benefit')}).success,false);
+  assert.equal(promotionPlanCreateInput.safeParse({...plan,benefits:Array(51).fill('Fixture benefit')}).success,false);
+  assert.equal(promotionPlanCreateInput.safeParse({...plan,benefits:['x'.repeat(2001)]}).success,false);
   assert.equal(promotionPlanCreateInput.safeParse({...plan,monthlyAmountCents:1.5}).success,false);
   const campaign = campaignCreateInput.parse({name:'Fixture campaign',capacity:100,durationUnit:'days',durationValue:7,startsAt:'2026-10-25T00:00:00Z'});
   assert.equal(campaign.isActive,true); assert.deepEqual(campaign.planIds,[]);
